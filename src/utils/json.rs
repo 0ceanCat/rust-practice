@@ -73,8 +73,10 @@ impl JsonParserWorker {
                 self.consume_token(); // skip ':'
                 let value = self.parse();
                 result.insert(key, value);
-                if self.current_token() == ',' {
+                if !self.is_end() && self.current_token() == ',' {
                     self.consume_token();
+                }else if !self.is_end() && self.current_token() != '}' {
+                    panic!("object parse failed");
                 }
             }
         }
@@ -93,6 +95,7 @@ impl JsonParserWorker {
                 self.consume_token();
             } else {
                 self.consume_token(); // skip '"'
+                self.skip_white_spaces();
                 return DataType::String(result);
             }
         }
@@ -106,9 +109,9 @@ impl JsonParserWorker {
         while !self.is_end() {
             array.push(self.parse());
             let current = self.current_token();
-            self.position += 1;
+            self.consume_token();
             match current {
-                '}' => break,
+                ']' => break,
                 ',' => continue,
                 _ => { panic!("array parse failed") }
             }
@@ -133,7 +136,8 @@ impl JsonParserWorker {
         if read_str == "true" {
             result = true
         } else if read_str == "fals" && self.current_token() == 'e' {
-            result = false
+            result = false;
+            self.consume_token(); // skip 'e'
         } else {
             panic!("boolean parse failed");
         }
