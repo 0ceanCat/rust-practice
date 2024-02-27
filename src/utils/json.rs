@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::utils::json::DataType::{Array, Boolean, Float, Int, Null, Object};
 
-pub(crate) struct JsonParserWorker {
+pub(crate) struct JsonParser {
     data: Vec<char>,
     len: usize,
     position: usize,
@@ -17,30 +17,18 @@ pub enum DataType {
     Null,
 }
 
-pub(crate) struct JsonParser;
-
 impl JsonParser {
-    pub(crate) fn new() -> Self {
-        JsonParser {}
-    }
-
-    pub(crate) fn parse_to_map(mut self, str: &str) -> HashMap<String, DataType> {
-        JsonParserWorker::new(str).parse_to_map()
-    }
-}
-
-impl JsonParserWorker {
-    fn new(str: &str) -> Self {
+    pub fn new(str: &str) -> Self {
         let chars: Vec<char> = str.chars().collect();
         let len = chars.len();
-        JsonParserWorker {
+        JsonParser {
             data: chars,
             len,
             position: 0,
         }
     }
 
-    fn parse_to_map(mut self) -> HashMap<String, DataType> {
+    pub fn parse_to_map(mut self) -> HashMap<String, DataType> {
         let Object(map) = self.parse_object() else {
             panic!("parse json failed")
         };
@@ -174,7 +162,7 @@ impl JsonParserWorker {
             '0'..='9' => {
                 let mut result = 0;
                 while !self.is_end() && ('0'..='9').contains(&self.current_token()) {
-                    result = result * 10 + JsonParserWorker::char_to_integer(self.current_token());
+                    result = result * 10 + JsonParser::char_to_integer(self.current_token());
                     self.consume_token();
                 }
                 return Int(result);
