@@ -6,7 +6,7 @@ pub(crate) struct JsonParser {
     len: usize,
     position: usize,
 }
-
+#[derive(Debug)]
 pub enum DataType {
     String(String),
     Float(f64),
