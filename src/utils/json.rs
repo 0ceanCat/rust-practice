@@ -6,6 +6,7 @@ pub(crate) struct JsonParser {
     len: usize,
     position: usize,
 }
+
 #[derive(Debug)]
 pub enum DataType {
     String(String),
@@ -15,6 +16,57 @@ pub enum DataType {
     Boolean(bool),
     Object(HashMap<String, DataType>),
     Null,
+}
+
+impl DataType {
+    pub(crate) fn unwrap_as_string(&self) -> &String {
+        match self {
+            DataType::String(data) => {data}
+            _ => panic!("this is not a string")
+        }
+    }
+
+    pub(crate) fn unwrap_as_float(&self) -> &f64 {
+        match self {
+            Float(data) => {data}
+            _ => panic!("this is not a Float")
+        }
+    }
+
+    pub(crate) fn unwrap_as_int(&self) -> &i32 {
+        match self {
+            Int(data) => {data}
+            _ => panic!("this is not an Int")
+        }
+    }
+
+    pub(crate) fn unwrap_as_array(&self) -> &Vec<DataType> {
+        match self {
+            Array(data) => {data}
+            _ => panic!("this is not an Array")
+        }
+    }
+
+    pub(crate) fn unwrap_as_boolean(self) -> bool {
+        match self {
+            Boolean(data) => {data}
+            _ => panic!("this is not a Boolean")
+        }
+    }
+
+    pub(crate) fn unwrap_as_object(self) -> HashMap<String, DataType> {
+        match self {
+            Object(data) => {data}
+            _ => panic!("this is not an Object")
+        }
+    }
+
+    pub(crate) fn is_null(&self) -> bool {
+        match self {
+            Null => true,
+            _ => false
+        }
+    }
 }
 
 impl JsonParser {
