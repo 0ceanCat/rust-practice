@@ -19,45 +19,45 @@ pub enum DataType {
 }
 
 impl DataType {
-    pub(crate) fn unwrap_as_string(&self) -> &String {
+    pub(crate) fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
-            DataType::String(data) => {data}
-            _ => panic!("this is not a string")
+            DataType::String(data) => {Ok(data)}
+            _ => Err("this is not a string")
         }
     }
 
-    pub(crate) fn unwrap_as_float(&self) -> &f64 {
+    pub(crate) fn unwrap_as_float(&self) -> Result<f64, &str> {
         match self {
-            Float(data) => {data}
-            _ => panic!("this is not a Float")
+            Float(data) => {Ok(*data)}
+            _ => Err("this is not a Float")
         }
     }
 
-    pub(crate) fn unwrap_as_int(&self) -> &i32 {
+    pub(crate) fn unwrap_as_int(&self) -> Result<i32, &str> {
         match self {
-            Int(data) => {data}
-            _ => panic!("this is not an Int")
+            Int(data) => {Ok(*data)}
+            _ => Err("this is not an Int")
         }
     }
 
-    pub(crate) fn unwrap_as_array(&self) -> &Vec<DataType> {
+    pub(crate) fn unwrap_as_array(&self) -> Result<&Vec<DataType>, &str> {
         match self {
-            Array(data) => {data}
-            _ => panic!("this is not an Array")
+            Array(data) => {Ok(data)}
+            _ => Err("this is not an Array")
         }
     }
 
-    pub(crate) fn unwrap_as_boolean(self) -> bool {
+    pub(crate) fn unwrap_as_boolean(&self) -> Result<bool, &str> {
         match self {
-            Boolean(data) => {data}
-            _ => panic!("this is not a Boolean")
+            Boolean(data) => {Ok(*data)}
+            _ => Err("this is not a Boolean")
         }
     }
 
-    pub(crate) fn unwrap_as_object(self) -> HashMap<String, DataType> {
+    pub(crate) fn unwrap_as_object(&self) -> Result<&HashMap<String, DataType>, &str> {
         match self {
-            Object(data) => {data}
-            _ => panic!("this is not an Object")
+            Object(data) => {Ok(data)}
+            _ => Err("this is not an Object")
         }
     }
 

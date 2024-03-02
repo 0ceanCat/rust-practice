@@ -138,15 +138,24 @@ impl HttpRequest {
                 .filter_map(|query| query.split_once("="))
                 .map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))
                 .collect();
-            return query_params
+            return query_params;
         }
-        return HashMap::new()
+        return HashMap::new();
     }
 }
 
-struct HttpContext {
-    path_params: HashMap<String, String>,
-    request: HttpRequest,
+pub(crate) struct HttpContext<'a> {
+    pub path_params: HashMap<String, String>,
+    pub request: &'a HttpRequest,
+}
+
+impl<'a> HttpContext<'a> {
+    pub fn new(path_params: HashMap<String, String>, request: &'a HttpRequest) -> Self {
+        HttpContext {
+            path_params,
+            request,
+        }
+    }
 }
 
 pub(crate) struct HttpResponse {
