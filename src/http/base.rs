@@ -7,19 +7,30 @@ use crate::utils::json::{DataType, JsonParser};
 pub(crate) struct MediaType;
 
 impl<'a> MediaType {
-    const APPLICATION_XML: &'a str = "application/xml";
-    const APPLICATION_ATOM_XML: &'a str = "application/atom+xml";
-    const APPLICATION_XHTML_XML: &'a str = "application/xhtml+xml";
-    const APPLICATION_SVG_XML: &'a str = "application/svg+xml";
-    const APPLICATION_JSON: &'a str = "application/json";
-    const APPLICATION_FORM_URLENCODED: &'a str = "application/x-www-form-urlencoded";
-    const MULTIPART_FORM_DATA: &'a str = "multipart/form-data";
-    const APPLICATION_OCTET_STREAM: &'a str = "application/octet-stream";
-    const TEXT_PLAIN: &'a str = "text/plain";
-    const TEXT_XML: &'a str = "text/xml";
-    const TEXT_HTML: &'a str = "text/html";
-    const SERVER_SENT_EVENTS: &'a str = "text/event-stream";
-    const APPLICATION_JSON_PATCH_JSON: &'a str = "application/json-patch+json";
+    pub(crate) const APPLICATION_XML: &'a str = "application/xml";
+    pub(crate) const APPLICATION_ATOM_XML: &'a str = "application/atom+xml";
+    pub(crate) const APPLICATION_XHTML_XML: &'a str = "application/xhtml+xml";
+    pub(crate) const APPLICATION_SVG_XML: &'a str = "application/svg+xml";
+    pub(crate) const APPLICATION_JSON: &'a str = "application/json";
+    pub(crate) const APPLICATION_FORM_URLENCODED: &'a str = "application/x-www-form-urlencoded";
+    pub(crate) const MULTIPART_FORM_DATA: &'a str = "multipart/form-data";
+    pub(crate) const APPLICATION_OCTET_STREAM: &'a str = "application/octet-stream";
+    pub(crate) const TEXT_PLAIN: &'a str = "text/plain";
+    pub(crate) const TEXT_XML: &'a str = "text/xml";
+    pub(crate) const TEXT_HTML: &'a str = "text/html";
+    pub(crate) const IMAGE_JPEG: &'a str = "image/jpeg";
+    pub(crate) const IMAGE_PNG: &'a str = "image/png";
+    pub(crate) const SERVER_SENT_EVENTS: &'a str = "text/event-stream";
+    pub(crate) const APPLICATION_JSON_PATCH_JSON: &'a str = "application/json-patch+json";
+}
+
+pub(crate) struct HttpHeader;
+impl<'a> HttpHeader {
+    pub(crate) const CONTENT_TYPE: &'a str = "Content-type";
+    pub(crate) const CONTENT_LENGTH: &'a str = "Content-length";
+    pub(crate) const ACCEPT: &'a str = "Accept";
+    pub(crate) const CONTENT: &'a str = "Content";
+    pub(crate) const USER_AGENT: &'a str = "User-Agent";
 }
 
 #[derive(Debug, Default, Hash, Copy, Clone, PartialEq, Eq)]
@@ -107,7 +118,7 @@ impl HttpRequest {
     }
 
     fn parse_body(reader: &mut BufReader<&TcpStream>, headers: &HashMap<String, String>) -> Option<HashMap<String, DataType>> {
-        let body = match headers.get("Content-Length") {
+        let body = match headers.get(HttpHeader::CONTENT_LENGTH) {
             Some(content_length) => {
                 let size: usize = content_length.parse().ok()?;
                 let mut buffer = vec![0u8; size];
@@ -146,34 +157,44 @@ impl HttpRequest {
 
 pub(crate) struct HttpContext<'a> {
     pub path_params: HashMap<String, String>,
+    pub query_params: HashMap<String, String>,
     pub request: &'a HttpRequest,
 }
 
 impl<'a> HttpContext<'a> {
-    pub fn new(path_params: HashMap<String, String>, request: &'a HttpRequest) -> Self {
+    pub fn new(path_params: HashMap<String, String>, query_params: HashMap<String, String>, request: &'a HttpRequest) -> Self {
         HttpContext {
             path_params,
+            query_params,
             request,
         }
     }
 }
 
 pub(crate) struct HttpResponse {
-    status: u32,
-    data: Option<String>,
+    pub(crate) status: u32,
+    pub(crate) headers: HashMap<String, String>,
+    pub(crate) data: Option<Vec<u8>>,
 }
 
 impl HttpResponse {
+
+    pub(crate) fn set_header(&mut self, key: String, value:String) {
+        self.headers.insert(key, value);
+    }
+
     pub(crate) fn ok() -> HttpResponse {
         HttpResponse {
             status: HttpStatus::OK,
+            headers: HashMap::new(),
             data: None,
         }
     }
 
-    pub(crate) fn ok_with_data(data: String) -> HttpResponse {
+    pub(crate) fn ok_with_data(data: Vec<u8>) -> HttpResponse {
         HttpResponse {
             status: HttpStatus::OK,
+            headers: HashMap::new(),
             data: Some(data),
         }
     }
@@ -181,21 +202,25 @@ impl HttpResponse {
     pub(crate) fn bad_request() -> HttpResponse {
         HttpResponse {
             status: HttpStatus::BAD_REQUEST,
+            headers: HashMap::new(),
             data: None,
         }
     }
 
-    pub(crate) fn bad_request_with_data(data: String) -> HttpResponse {
+    pub(crate) fn bad_request_with_data(data: Vec<u8>) -> HttpResponse {
         HttpResponse {
             status: HttpStatus::BAD_REQUEST,
+            headers: HashMap::new(),
             data: Some(data),
         }
     }
 
-    pub(crate) fn build_response(status: u32, data: Option<String>) -> HttpResponse {
+    pub(crate) fn build_response(status: u32, data: Option<Vec<u8>>) -> HttpResponse {
+        let mut headers = HashMap::new();
         HttpResponse {
             status,
-            data,
+            headers,
+            data
         }
     }
 }
@@ -203,34 +228,48 @@ impl HttpResponse {
 #[derive(Debug)]
 pub(crate) struct HttpConnection {
     tcp_stream: TcpStream,
-    socket_ddr: SocketAddr,
+    pub(crate) socket_addr: SocketAddr,
     pub(crate) request: HttpRequest,
 }
 
 impl<'a> HttpConnection {
     const DEFAULT_MEDIA_TYPE: &'a str = MediaType::TEXT_PLAIN;
+    const BREAK_LINE: &'a str = "\r\n";
 
     pub(crate) fn new(connection: (TcpStream, SocketAddr)) -> Self {
         HttpConnection {
             request: HttpRequest::new(&connection.0).unwrap(),
             tcp_stream: connection.0,
-            socket_ddr: connection.1,
+            socket_addr: connection.1,
         }
     }
 
-    pub(crate) fn get_request(&self) -> &HttpRequest {
-        &self.request
+    pub(crate) fn response(mut self, response: HttpResponse) {
+        let response_bytes = Self::build_response_string(self.request, response);
+        self.tcp_stream.write_all(&response_bytes).unwrap();
     }
 
-    pub(crate) fn response(mut self, response: HttpResponse) {
-        let status_line = format!("{} {}", self.request.version, response.status.to_string());
-        let contents = response.data.unwrap_or(String::new());
-        let length = contents.len();
+    fn build_response_string(request: HttpRequest, http_response: HttpResponse) -> Vec<u8> {
+        let status_line = format!("{} {} OK", request.version, http_response.status.to_string());
+        let mut response_detail = String::new();
+        let mut headers = http_response.headers.clone();
 
-        let default = HttpConnection::DEFAULT_MEDIA_TYPE.to_string();
-        let media_type = self.request.headers.get("Accept").unwrap_or(&default);
+        response_detail.push_str(status_line.as_str());
+        response_detail.push_str(Self::BREAK_LINE);
+        headers.iter().for_each(|(k, v)| {
+            response_detail.push_str(k.as_str());
+            response_detail.push_str(": ");
+            response_detail.push_str(v.as_str());
+            response_detail.push_str(Self::BREAK_LINE);
+        });
 
-        let response = format!("{status_line}\r\nContent-type: {media_type}\r\nContent-Length: {length}\r\n\r\n{contents}");
-        self.tcp_stream.write_all(response.as_bytes()).unwrap();
+        let content = http_response.data.unwrap_or(vec![]);
+        response_detail.push_str("Content-Length: ");
+        response_detail.push_str(content.len().to_string().as_str());
+        response_detail.push_str(Self::BREAK_LINE);
+        response_detail.push_str(Self::BREAK_LINE);
+        let mut response_detail = response_detail.into_bytes();
+        response_detail.extend(content);
+        response_detail
     }
 }

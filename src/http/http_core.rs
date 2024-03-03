@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::net::{TcpListener};
-use std::ops::Index;
 use std::string::ToString;
 use std::vec;
 use regex::Regex;
-use crate::http::base::{HttpConnection, HttpMethod, HttpContext, HttpResponse, HttpStatus};
+use crate::http::base::{HttpConnection, HttpMethod, HttpContext, HttpResponse, HttpStatus, MediaType};
 
 struct EndPoint{
     url: String,
@@ -42,7 +41,9 @@ pub(crate) struct HttpServer {
     host: String,
     port: u32,
     listener: Option<TcpListener>,
-    dispatcher: RequestDispatcher
+    dispatcher: RequestDispatcher,
+    do_before: Vec<Box<dyn Fn(&HttpConnection) -> bool>>,
+    do_after: Vec<Box<dyn Fn(&mut HttpResponse)>>
 }
 
 impl HttpServer {
@@ -52,7 +53,17 @@ impl HttpServer {
             port,
             listener: None,
             dispatcher: RequestDispatcher::new(),
+            do_before: vec![],
+            do_after: vec![]
         }
+    }
+
+    pub(crate) fn do_before(&mut self, filter: Box<dyn Fn(&HttpConnection) -> bool>) {
+        self.do_before.push(filter)
+    }
+
+    pub(crate) fn do_after(&mut self, filter: Box<dyn Fn(&mut HttpResponse)>) {
+        self.do_after.push(filter)
     }
 
     pub(crate) fn register_end_point(&mut self,
@@ -74,7 +85,11 @@ impl HttpServer {
         loop {
             let accepted = listener.accept().unwrap();
             let connection = HttpConnection::new(accepted);
-            self.dispatcher.dispatch(connection)
+            if self.do_before.iter().any(|x| x(&connection)) {
+                connection.response(HttpResponse::build_response(HttpStatus::NOT_ALLOWED, None))
+            } else {
+                self.dispatcher.dispatch(connection, &self.do_after)
+            }
         }
     }
 }
@@ -108,14 +123,30 @@ impl  PathParamParser  {
         self.url_path_pattern_regex.is_match(url)
     }
 
-    pub(crate) fn parse(&self, url: &str) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-        for cap in self.url_path_pattern_regex.captures_iter(url) {
+    pub(crate) fn parse(&self, url: &str) -> (HashMap<String, String>, HashMap<String, String>){
+        let without_query_params:&str = url.split("?").take(1).next().unwrap();
+
+        let mut path_params = HashMap::new();
+        for cap in self.url_path_pattern_regex.captures_iter(without_query_params) {
             for (i, string) in self.path_param.iter().enumerate() {
-                map.insert(string.clone(), cap[i + 1].to_string());
+                path_params.insert(string.clone(), cap[i + 1].to_string());
             }
         }
-        map
+
+        let mut query_params = HashMap::new();
+        match url.split_once("?") {
+            None => {}
+            Some((_, queries)) => {
+                queries.split("&")
+                    .map(|x| x.split_once("=").unwrap())
+                    .for_each(|(query, value)| {
+                        query_params.insert(String::from(query), String::from(value));
+                    });
+            }
+        }
+
+
+        (path_params, query_params)
     }
 
 }
@@ -175,19 +206,21 @@ impl RequestDispatcher {
     }
 
     fn find_possible_endpoints_pure_url(&self, url: &str) -> Option<&HashSet<EndPoint>> {
-        match self.endpoints_pure_url.get(&url.to_string()) {
+        let without_query_params = url.split("?").take(1).next()?;
+        match self.endpoints_pure_url.get(&without_query_params.to_string()) {
             None => {None}
             Some(endpoints) => {Some(endpoints)}
         }
     }
-    fn find_possible_endpoints_path_url(&self, url: &str) -> Option<(HashMap<String, String>, &HashSet<EndPoint>)> {
+    fn find_possible_endpoints_path_url(&self, url: &str) -> Option<((HashMap<String, String>, HashMap<String, String>), &HashSet<EndPoint>)> {
+        let without_query_params = url.split("?").take(1).next()?;
         self.endpoints_path_param_url.iter()
-            .filter(|x| x.0.is_match(url))
+            .filter(|x| x.0.is_match(without_query_params))
             .map(|x| (x.0.parse(url), &(x.1)))
             .next()
     }
 
-    fn dispatch(&mut self, connection: HttpConnection) {
+    fn dispatch(&mut self, connection: HttpConnection, do_after: &Vec<Box<dyn Fn(&mut HttpResponse)>>) {
         let request = &connection.request;
         let endpoints_pure_url = match self.find_possible_endpoints_pure_url(&request.path){
             None => {None}
@@ -199,7 +232,7 @@ impl RequestDispatcher {
             }
         };
 
-        let response = match endpoints_pure_url {
+        let mut response = match endpoints_pure_url {
             None => {
                 match self.find_possible_endpoints_path_url(&request.path) {
                     None => {HttpResponse::build_response(HttpStatus::NOT_FOUND, None)}
@@ -211,17 +244,18 @@ impl RequestDispatcher {
                         }else{
                             let endpoint: &EndPoint = endpoint.unwrap();
                             let func = &(*endpoint.func);
-                            func(HttpContext::new(endpoints.0, request))
+                            func(HttpContext::new(endpoints.0.0, endpoints.0.1, request))
                         }
                     }
                 }
             }
             Some(endpoint) => {
                 let func = &(*endpoint.func);
-                func(HttpContext::new(HashMap::new(), request))
+                func(HttpContext::new(HashMap::new(), HashMap::new(), request))
             }
         };
 
+        do_after.iter().for_each(|x| x(&mut response));
         connection.response(response)
     }
 }
