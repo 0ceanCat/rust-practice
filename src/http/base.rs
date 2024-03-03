@@ -169,6 +169,14 @@ impl<'a> HttpContext<'a> {
             request,
         }
     }
+
+    pub fn get_path_param(&self, path_variable: &str) -> Option<&String> {
+        self.path_params.get(path_variable)
+    }
+
+    pub fn get_query_param(&self, query_variable: &str) -> Option<&String> {
+        self.query_params.get(query_variable)
+    }
 }
 
 pub(crate) struct HttpResponse {
