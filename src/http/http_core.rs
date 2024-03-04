@@ -188,11 +188,12 @@ impl RequestDispatcher {
                                                         .next();
 
             if let Some((_, endpoints)) = exist {
-                endpoints.insert(EndPoint::new(url, method, func));
+                inserted = endpoints.insert(EndPoint::new(url, method, func));
             } else {
                 let mut set = HashSet::new();
                 set.insert(EndPoint::new(url, method, func));
                 self.endpoints_path_param_url.push((parser, set));
+                inserted = true;
             }
         } else {
             inserted = self.endpoints_pure_url.entry(url.to_string())
@@ -200,7 +201,7 @@ impl RequestDispatcher {
                                             .insert(EndPoint::new(url, method, func));
         }
 
-        if inserted {
+        if !inserted {
             panic!("`{:?} {}` is already used by another endpoint", method, url)
         }
     }

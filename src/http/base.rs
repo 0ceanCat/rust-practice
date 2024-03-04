@@ -181,38 +181,27 @@ impl<'a> HttpContext<'a> {
 
 pub(crate) struct HttpResponse {
     pub(crate) status: u32,
-    pub(crate) headers: HashMap<String, String>,
+    headers: HashMap<String, String>,
     pub(crate) data: Option<Vec<u8>>,
 }
 
-impl HttpResponse {
+impl<'a> HttpResponse {
+    const BREAK_LINE: &'a str = "\r\n";
 
     pub(crate) fn set_header(&mut self, key: String, value:String) {
         self.headers.insert(key, value);
     }
 
     pub(crate) fn ok() -> HttpResponse {
-        HttpResponse {
-            status: HttpStatus::OK,
-            headers: HashMap::new(),
-            data: None,
-        }
+        HttpResponse::build_response(HttpStatus::OK, None)
     }
 
     pub(crate) fn ok_with_data(data: Vec<u8>) -> HttpResponse {
-        HttpResponse {
-            status: HttpStatus::OK,
-            headers: HashMap::new(),
-            data: Some(data),
-        }
+        HttpResponse::build_response(HttpStatus::OK, Some(data))
     }
 
     pub(crate) fn bad_request() -> HttpResponse {
-        HttpResponse {
-            status: HttpStatus::BAD_REQUEST,
-            headers: HashMap::new(),
-            data: None,
-        }
+        HttpResponse::build_response(HttpStatus::BAD_REQUEST, None)
     }
 
     pub(crate) fn bad_request_with_data(data: Vec<u8>) -> HttpResponse {
@@ -231,6 +220,31 @@ impl HttpResponse {
             data
         }
     }
+
+    pub(crate) fn get_output_as_bytes(self, version: &str) -> Vec<u8> {
+        let status_line = format!("{} {} OK", version, self.status.to_string());
+        let mut response_detail = String::new();
+        let mut headers = &self.headers;
+
+        response_detail.push_str(status_line.as_str());
+        response_detail.push_str(Self::BREAK_LINE);
+        headers.iter().for_each(|(k, v)| {
+            response_detail.push_str(k.as_str());
+            response_detail.push_str(":");
+            response_detail.push_str(v.as_str());
+            response_detail.push_str(Self::BREAK_LINE);
+        });
+
+        let content = self.data.unwrap_or(vec![]);
+        response_detail.push_str(HttpHeader::CONTENT_LENGTH);
+        response_detail.push_str(":");
+        response_detail.push_str(content.len().to_string().as_str());
+        response_detail.push_str(Self::BREAK_LINE);
+        response_detail.push_str(Self::BREAK_LINE);
+        let mut response_detail = response_detail.into_bytes();
+        response_detail.extend(content);
+        response_detail
+    }
 }
 
 #[derive(Debug)]
@@ -241,8 +255,6 @@ pub(crate) struct HttpConnection {
 }
 
 impl<'a> HttpConnection {
-    const DEFAULT_MEDIA_TYPE: &'a str = MediaType::TEXT_PLAIN;
-    const BREAK_LINE: &'a str = "\r\n";
 
     pub(crate) fn new(connection: (TcpStream, SocketAddr)) -> Self {
         HttpConnection {
@@ -253,31 +265,6 @@ impl<'a> HttpConnection {
     }
 
     pub(crate) fn response(mut self, response: HttpResponse) {
-        let response_bytes = Self::build_response_string(self.request, response);
-        self.tcp_stream.write_all(&response_bytes).unwrap();
-    }
-
-    fn build_response_string(request: HttpRequest, http_response: HttpResponse) -> Vec<u8> {
-        let status_line = format!("{} {} OK", request.version, http_response.status.to_string());
-        let mut response_detail = String::new();
-        let mut headers = http_response.headers.clone();
-
-        response_detail.push_str(status_line.as_str());
-        response_detail.push_str(Self::BREAK_LINE);
-        headers.iter().for_each(|(k, v)| {
-            response_detail.push_str(k.as_str());
-            response_detail.push_str(": ");
-            response_detail.push_str(v.as_str());
-            response_detail.push_str(Self::BREAK_LINE);
-        });
-
-        let content = http_response.data.unwrap_or(vec![]);
-        response_detail.push_str("Content-Length: ");
-        response_detail.push_str(content.len().to_string().as_str());
-        response_detail.push_str(Self::BREAK_LINE);
-        response_detail.push_str(Self::BREAK_LINE);
-        let mut response_detail = response_detail.into_bytes();
-        response_detail.extend(content);
-        response_detail
+        self.tcp_stream.write_all(&response.get_output_as_bytes(self.request.version.as_str())).unwrap();
     }
 }
