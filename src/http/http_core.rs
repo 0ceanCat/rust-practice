@@ -4,7 +4,7 @@ use std::net::{TcpListener};
 use std::string::ToString;
 use std::vec;
 use regex::Regex;
-use crate::http::base::{HttpConnection, HttpMethod, HttpContext, HttpResponse, HttpStatus, MediaType};
+use crate::http::base::{HttpConnection, HttpMethod, HttpContext, HttpResponse, HttpStatus};
 
 struct EndPoint{
     url: String,
@@ -84,7 +84,7 @@ impl HttpServer {
 
         loop {
             let accepted = listener.accept().unwrap();
-            let connection = HttpConnection::new(accepted);
+            let mut connection = HttpConnection::new(accepted);
             if self.do_before.iter().any(|x| x(&connection)) {
                 connection.response(HttpResponse::build_response(HttpStatus::NOT_ALLOWED, None))
             } else {
@@ -221,7 +221,7 @@ impl RequestDispatcher {
             .next()
     }
 
-    fn dispatch(&mut self, connection: HttpConnection, do_after: &Vec<Box<dyn Fn(&mut HttpResponse)>>) {
+    fn dispatch(&mut self, mut connection: HttpConnection, do_after: &Vec<Box<dyn Fn(&mut HttpResponse)>>) {
         let request = &connection.request;
         let endpoints_pure_url = match self.find_possible_endpoints_pure_url(&request.path){
             None => {None}
@@ -257,6 +257,6 @@ impl RequestDispatcher {
         };
 
         do_after.iter().for_each(|x| x(&mut response));
-        connection.response(response)
+        connection.response(response);
     }
 }

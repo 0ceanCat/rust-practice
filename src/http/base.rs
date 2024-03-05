@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::str::FromStr;
 use crate::utils::json::{DataType, JsonParser};
 
@@ -254,6 +254,12 @@ pub(crate) struct HttpConnection {
     pub(crate) request: HttpRequest,
 }
 
+impl<'a> Drop for HttpConnection {
+    fn drop(&mut self) {
+        self.tcp_stream.shutdown(Shutdown::Both).unwrap()
+    }
+}
+
 impl<'a> HttpConnection {
 
     pub(crate) fn new(connection: (TcpStream, SocketAddr)) -> Self {
@@ -264,7 +270,11 @@ impl<'a> HttpConnection {
         }
     }
 
-    pub(crate) fn response(mut self, response: HttpResponse) {
+    pub(crate) fn response(&mut self, response: HttpResponse) {
         self.tcp_stream.write_all(&response.get_output_as_bytes(self.request.version.as_str())).unwrap();
+    }
+
+    pub(crate) fn close(&self) {
+        self.tcp_stream.shutdown(Shutdown::Both).unwrap()
     }
 }
