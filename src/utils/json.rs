@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::iter::Map;
-use uuid::uuid;
 use crate::utils::json::DataType::{Array, Boolean, Float, Int, Null, Object};
 
 pub(crate) struct JsonParser {
@@ -17,6 +15,7 @@ pub enum DataType {
     Array(Vec<DataType>),
     Boolean(bool),
     Object(HashMap<String, DataType>),
+    Entry(String, Box<DataType>),
     Null,
 }
 
@@ -250,26 +249,64 @@ impl JsonParser {
 }
 
 pub(crate) trait JsonSerializable {
-    fn serialize(&self) -> String;
+    fn serialize(&self, serializer: Serializer) -> String;
 }
 
-struct JsonEntry<T> where T: JsonSerializable
-{
-    key: String,
-    value: T
-}
-
-impl<T> JsonSerializable for JsonEntry<T>
-    where T: JsonSerializable
-{
-    fn serialize(&self) -> String {
-        format!("\"{}\": {}", self.key, self.value.serialize())
+impl JsonSerializable for String {
+    fn serialize(&self, serializer: Serializer) -> String {
+        serializer.serialize_string(&self[..])
     }
 }
 
-impl<T> JsonEntry<T> where T: JsonSerializable
+impl JsonSerializable for f64
 {
-    fn new(key: String, value: T) -> JsonEntry<T>
+    fn serialize(&self, serializer: Serializer) -> String {
+        serializer.serialize_f64(*self)
+    }
+}
+
+impl JsonSerializable for i32
+{
+    fn serialize(&self, serializer: Serializer) -> String {
+        serializer.serialize_i32(*self)
+    }
+}
+
+impl<T> JsonSerializable for Vec<T>
+    where T: JsonSerializable
+{
+    fn serialize(&self, serializer: Serializer) -> String {
+        let mut seq = serializer.serialize_seq();
+        for e in self {
+            seq.serialize_element(e);
+        }
+        seq.end()
+    }
+}
+
+impl<T> JsonSerializable for HashMap<String, T>
+    where T: JsonSerializable
+{
+    fn serialize(&self, serializer: Serializer) -> String {
+        let mut seq = serializer.serialize_struct();
+        for e in self {
+            seq.serialize_field(e.0, e.1);
+        }
+        seq.end()
+    }
+}
+
+struct JsonEntry<'a, T>
+    where T: JsonSerializable
+{
+    key: String,
+    value: &'a T
+}
+
+impl<'a, T> JsonEntry<'a, T>
+    where T: JsonSerializable
+{
+    fn new(key: String, value: &'a T) -> JsonEntry<'a, T>
     {
         JsonEntry {
             key,
@@ -278,111 +315,97 @@ impl<T> JsonEntry<T> where T: JsonSerializable
     }
 }
 
-impl JsonSerializable for i32 {
-    fn serialize(&self) -> String{
-        self.to_string()
-    }
+pub(crate) struct Serializer {
 }
 
-impl JsonSerializable for f64 {
-    fn serialize(&self) -> String{
-        self.to_string()
+impl Serializer {
+    pub fn new() -> Serializer {
+        Serializer{}
     }
-}
-
-impl<T> JsonSerializable for Vec<T>
-    where T: JsonSerializable
-{
-    fn serialize(&self) -> String{
-        let mut json = String::new();
-        json.push('[');
-        let jsons: Vec<String> = self.iter()
-                    .map(|x| x.serialize())
-                    .collect();
-        json.push_str(jsons.join(", ").as_str());
-        json.push(']');
-        json
-    }
-}
-
-impl JsonSerializable for bool {
-    fn serialize(&self) -> String {
-        self.to_string()
-    }
-}
-
-impl JsonSerializable for String {
-    fn serialize(&self) -> String {
-        format!("\"{}\"", self.clone())
-    }
-}
-
-impl JsonSerializable for HashMap<String, DataType> {
-    fn serialize(&self) -> String {
-        let mut json = String::new();
-        json.push('{');
-        json.push('\n');
-        let jsons: Vec<String> = self.iter()
-            .map(|(k, v)| format!("\"{}\": {}", k.clone(), v.serialize()))
-            .collect();
-        json.push_str(jsons.join(",\n").as_str());
-        json.push('}');
-        json
-    }
-}
-
-impl JsonSerializable for DataType {
-    fn serialize(&self) -> String {
-        match self {
-            DataType::String(data) => {data.serialize()}
-            Float(data) => {data.serialize()}
-            Int(data) => {data.serialize()}
-            Array(data) => {data.serialize()}
-            Boolean(data) => {data.serialize()}
-            Object(data) => {data.serialize()}
-            Null => {"null".to_string()}
-        }
-    }
-}
-
-pub(crate) struct JsonSerializer<T>
- where T: JsonSerializable + Sized {
-    result: HashMap<String, T>,
-}
-
-pub(crate) struct SerializerSeq<'a>
-{
-    seq: &'a mut Vec<Box<dyn JsonSerializable>>
-}
-
-impl<'a> SerializerSeq<'a>
-{
-    fn new(seq: &mut Vec<Box<dyn JsonSerializable>>) -> SerializerSeq {
-        SerializerSeq {
-            seq
-        }
+    pub fn serialize_string(&self, str: &str) -> String {
+        format!("\"{str}\"")
     }
 
-    fn serialize_as_int(&mut self, elem: i32) {
-        self.seq.push(Box::new(DataType::Int(elem)))
+    pub fn serialize_bool(&self, b: bool) -> String {
+        b.to_string()
     }
 
-    fn serialize_as_string(&mut self, elem: String) {
-        self.seq.push(Box::new(DataType::String(elem)))
+    pub fn serialize_i32(&self, i: i32) -> String {
+        i.to_string()
     }
 
-    fn serialize_as_boolean(&mut self, elem: bool) {
-        self.seq.push(Box::new(DataType::Boolean(elem)))
+    pub fn serialize_f64(&self, f: f64) -> String {
+        f.to_string()
     }
 
-    fn serialize_as_float(&mut self, elem: f64) {
-        self.seq.push(Box::new(DataType::Float(elem)))
-    }
-
-    fn serialize_as_object<T>(&mut self, name: &str, elem: T)
-    where T: JsonSerializable
+    pub fn serialize_struct(&self) -> SerializerStruct
     {
-        //TODO
-        self.seq.push(Box::new(JsonEntry::new(name.to_string(), elem.serialize())))
+        SerializerStruct::new()
+    }
+
+    pub fn serialize_seq(&self) -> SerializerSeq
+    {
+        SerializerSeq::new()
+    }
+}
+
+pub(crate) struct SerializerStruct
+{
+    fields: String
+}
+
+impl SerializerStruct
+{
+    fn new() -> SerializerStruct {
+        SerializerStruct {
+            fields: String::from("{")
+        }
+    }
+
+    pub fn serialize_field<T>(&mut self, name: &str, value: &T)
+        where T: JsonSerializable
+    {
+        self.fields.push_str("\"");
+        self.fields.push_str(name);
+        self.fields.push_str("\": ");
+        self.fields.push_str(value.serialize(Serializer{}).as_str());
+        self.fields.push(',');
+    }
+
+    pub fn end(mut self) -> String {
+        if self.fields.len() > 1 {
+            self.fields.remove(self.fields.len() - 1);
+        }
+        self.fields.push('}');
+        self.fields
+    }
+}
+
+pub(crate) struct SerializerSeq
+{
+    seq: String
+}
+
+impl SerializerSeq
+{
+    fn new() -> SerializerSeq{
+        SerializerSeq {
+            seq: String::from("[")
+        }
+    }
+
+    fn serialize_element<T>(&mut self, elem: &T)
+        where T: JsonSerializable
+    {
+        self.seq.push_str(elem.serialize(Serializer{}).as_str());
+        self.seq.push(',');
+    }
+
+    fn end(mut self) -> String {
+        if self.seq.len() > 1 {
+            self.seq.remove(self.seq.len() - 1);
+        }
+        self.seq.push(']');
+        self.seq
     }
 }
