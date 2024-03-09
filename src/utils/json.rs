@@ -21,42 +21,42 @@ pub enum DataType {
 impl DataType {
     pub(crate) fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
-            DataType::String(data) => {Ok(data)}
+            DataType::String(data) => { Ok(data) }
             _ => Err("this is not a string")
         }
     }
 
     pub(crate) fn unwrap_as_float(&self) -> Result<f64, &str> {
         match self {
-            Float(data) => {Ok(*data)}
+            Float(data) => { Ok(*data) }
             _ => Err("this is not a Float")
         }
     }
 
     pub(crate) fn unwrap_as_int(&self) -> Result<i32, &str> {
         match self {
-            Int(data) => {Ok(*data)}
+            Int(data) => { Ok(*data) }
             _ => Err("this is not an Int")
         }
     }
 
     pub(crate) fn unwrap_as_array(&self) -> Result<&Vec<DataType>, &str> {
         match self {
-            Array(data) => {Ok(data)}
+            Array(data) => { Ok(data) }
             _ => Err("this is not an Array")
         }
     }
 
     pub(crate) fn unwrap_as_boolean(&self) -> Result<bool, &str> {
         match self {
-            Boolean(data) => {Ok(*data)}
+            Boolean(data) => { Ok(*data) }
             _ => Err("this is not a Boolean")
         }
     }
 
     pub(crate) fn unwrap_as_object(&self) -> Result<&HashMap<String, DataType>, &str> {
         match self {
-            Object(data) => {Ok(data)}
+            Object(data) => { Ok(data) }
             _ => Err("this is not an Object")
         }
     }
@@ -115,7 +115,7 @@ impl JsonParser {
                 result.insert(key, value);
                 if !self.is_end() && self.current_token() == ',' {
                     self.consume_token();
-                }else if !self.is_end() && self.current_token() != '}' {
+                } else if !self.is_end() && self.current_token() != '}' {
                     panic!("object parse failed");
                 }
             }
@@ -244,5 +244,167 @@ impl JsonParser {
 
     fn char_to_integer(c: char) -> i32 {
         c as i32 - 0x30
+    }
+}
+
+pub(crate) trait JsonSerializable {
+    fn serialize(&self, serializer: Serializer) -> String;
+}
+
+impl JsonSerializable for String {
+    fn serialize(&self, serializer: Serializer) -> String {
+        serializer.serialize_string(&self[..])
+    }
+}
+
+impl JsonSerializable for f64
+{
+    fn serialize(&self, serializer: Serializer) -> String {
+        serializer.serialize_f64(*self)
+    }
+}
+
+impl JsonSerializable for i32
+{
+    fn serialize(&self, serializer: Serializer) -> String {
+        serializer.serialize_i32(*self)
+    }
+}
+
+impl<T> JsonSerializable for Vec<T>
+    where T: JsonSerializable
+{
+    fn serialize(&self, serializer: Serializer) -> String {
+        let mut seq = serializer.serialize_seq();
+        for e in self {
+            seq.serialize_element(e);
+        }
+        seq.end()
+    }
+}
+
+impl<T> JsonSerializable for HashMap<String, T>
+    where T: JsonSerializable
+{
+    fn serialize(&self, serializer: Serializer) -> String {
+        let mut seq = serializer.serialize_struct();
+        for e in self {
+            seq.serialize_field(e.0, e.1);
+        }
+        seq.end()
+    }
+}
+
+struct JsonEntry<'a, T>
+    where T: JsonSerializable
+{
+    key: String,
+    value: &'a T
+}
+
+impl<'a, T> JsonEntry<'a, T>
+    where T: JsonSerializable
+{
+    fn new(key: String, value: &'a T) -> JsonEntry<'a, T>
+    {
+        JsonEntry {
+            key,
+            value
+        }
+    }
+}
+
+pub(crate) struct Serializer {
+}
+
+impl Serializer {
+    pub fn new() -> Serializer {
+        Serializer{}
+    }
+    pub fn serialize_string(&self, str: &str) -> String {
+        format!("\"{str}\"")
+    }
+
+    pub fn serialize_bool(&self, b: bool) -> String {
+        b.to_string()
+    }
+
+    pub fn serialize_i32(&self, i: i32) -> String {
+        i.to_string()
+    }
+
+    pub fn serialize_f64(&self, f: f64) -> String {
+        f.to_string()
+    }
+
+    pub fn serialize_struct(&self) -> SerializerStruct
+    {
+        SerializerStruct::new()
+    }
+
+    pub fn serialize_seq(&self) -> SerializerSeq
+    {
+        SerializerSeq::new()
+    }
+}
+
+pub(crate) struct SerializerStruct
+{
+    fields: String
+}
+
+impl SerializerStruct
+{
+    fn new() -> SerializerStruct {
+        SerializerStruct {
+            fields: String::from("{")
+        }
+    }
+
+    pub fn serialize_field<T>(&mut self, name: &str, value: &T)
+        where T: JsonSerializable
+    {
+        self.fields.push_str("\"");
+        self.fields.push_str(name);
+        self.fields.push_str("\": ");
+        self.fields.push_str(value.serialize(Serializer{}).as_str());
+        self.fields.push(',');
+    }
+
+    pub fn end(mut self) -> String {
+        if self.fields.len() > 1 {
+            self.fields.remove(self.fields.len() - 1);
+        }
+        self.fields.push('}');
+        self.fields
+    }
+}
+
+pub(crate) struct SerializerSeq
+{
+    seq: String
+}
+
+impl SerializerSeq
+{
+    fn new() -> SerializerSeq{
+        SerializerSeq {
+            seq: String::from("[")
+        }
+    }
+
+    fn serialize_element<T>(&mut self, elem: &T)
+        where T: JsonSerializable
+    {
+        self.seq.push_str(elem.serialize(Serializer{}).as_str());
+        self.seq.push(',');
+    }
+
+    fn end(mut self) -> String {
+        if self.seq.len() > 1 {
+            self.seq.remove(self.seq.len() - 1);
+        }
+        self.seq.push(']');
+        self.seq
     }
 }
