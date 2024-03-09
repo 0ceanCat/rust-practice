@@ -15,7 +15,6 @@ pub enum DataType {
     Array(Vec<DataType>),
     Boolean(bool),
     Object(HashMap<String, DataType>),
-    Entry(String, Box<DataType>),
     Null,
 }
 
