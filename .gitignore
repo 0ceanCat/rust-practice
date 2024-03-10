@@ -16,3 +16,5 @@ Cargo.lock
 
 src/main.rs
 src/images
+
+db
