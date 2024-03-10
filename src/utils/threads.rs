@@ -1,4 +1,4 @@
-// src/lib.rs
+// src/main
 use std::{
     sync::{mpsc, Arc, Mutex},
     thread,
