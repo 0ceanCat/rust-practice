@@ -4,8 +4,6 @@ use std::collections::BTreeMap;
 pub trait Container: Any {
     fn add(&mut self, value: u16) -> bool;
 
-    fn contains(&self, value: u16) -> bool;
-
     fn cardinality (&self) -> usize;
 
     fn iter(&self) -> Box<dyn Iterator<Item = u16> + '_>;
@@ -40,10 +38,6 @@ impl Container for ArrayContainer {
                 true
             }
         }
-    }
-
-    fn contains(&self, value: u16) -> bool {
-        self.array.binary_search(&value).is_ok()
     }
 
     fn cardinality (&self) -> usize {
@@ -98,11 +92,6 @@ impl Container for BitmapContainer {
         result
     }
 
-    fn contains(&self, key: u16) -> bool {
-        let (bucket, idx_inside_bucket) = Self::find_position_in_bitmap(key);
-        self.bitmap[bucket] & (1 << idx_inside_bucket) != 0
-    }
-
     fn cardinality(&self) -> usize {
         self.cardinality
     }
@@ -154,36 +143,64 @@ impl<'a> Iterator for BitmapIterator<'a> {
 
 
 pub struct RoaringBitmap {
-    pub(crate) containers: BTreeMap<u16, Box<dyn Container>>
+    containers: BTreeMap<u16, Box<dyn Container>>,
+    cardinality: usize
 }
 
 impl RoaringBitmap {
     pub fn new() -> RoaringBitmap {
         RoaringBitmap {
-            containers: BTreeMap::new()
+            containers: BTreeMap::new(),
+            cardinality: 0
         }
     }
 
     pub fn insert(&mut self, number: u32) -> bool {
         let key = (number >> 16) as u16;
         let value = (number & 0xffff) as u16;
+
+
+        let mut result = false;
         match self.containers.get_mut(&key) {
             None => {
                 let mut array_container = ArrayContainer::new();
-                let result = array_container.add(value);
+                result = array_container.add(value);
                 self.containers.insert(key, Box::new(array_container));
-                result
             }
             Some(container) => {
                 if let Some(array_container) = container.as_any().downcast_ref::<ArrayContainer>() {
-                    let mut bitmap = BitmapContainer::from_iter(array_container.iter());
-                    let result = bitmap.add(value);
-                    self.containers.insert(key, Box::new(bitmap));
-                    result
+                    if array_container.cardinality() >= ARRAY_MAX_SIZE {
+                        let mut bitmap = BitmapContainer::from_iter(array_container.iter());
+                        result = bitmap.add(value);
+                        self.containers.insert(key, Box::new(bitmap));
+                    } else {
+                        result = container.add(value);
+                    }
                 } else {
-                    container.add(value)
+                    result = container.add(value)
                 }
             }
+        };
+
+        if result {
+            self.cardinality += 1;
         }
+        result
+    }
+
+    pub fn from_iter(iter: impl Iterator<Item=u32>) -> RoaringBitmap {
+        let mut vec: Vec<u32> = iter.collect();
+        vec.sort();
+        let mut roaring_bitmap = RoaringBitmap::new();
+
+        for v in vec {
+            roaring_bitmap.insert(v);
+        }
+
+        roaring_bitmap
+    }
+
+    pub fn cardinality(&self) -> usize {
+        self.cardinality
     }
 }
