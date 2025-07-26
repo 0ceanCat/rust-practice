@@ -1,19 +1,27 @@
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::{Range};
+
+const ARRAY_MAX_SIZE: usize = 4096;
+const BITMAP_SIZE: usize = 1024;
+const U64_BITS: usize = 64;
+const U16_BITS: usize = 16;
 
 pub trait Container: Any {
     fn add(&mut self, value: u16) -> bool;
+
+    fn remove(&mut self, value: u16) -> bool;
+
+    fn remove_values(&mut self, values: Vec<u16>) -> usize;
 
     fn cardinality (&self) -> usize;
 
     fn iter(&self) -> Box<dyn Iterator<Item = u16> + '_>;
 
+    fn contains(&self, value: u16) -> bool;
+
     fn as_any(&self) -> &dyn Any;
 }
-
-const ARRAY_MAX_SIZE: usize = 4096;
-const BITMAP_SIZE: usize = 1024;
-const U64_BITS: usize = 64;
 
 pub struct ArrayContainer {
     array: Vec<u16>
@@ -23,6 +31,29 @@ impl ArrayContainer {
     pub fn new() -> ArrayContainer {
         ArrayContainer {
             array: Vec::new()
+        }
+    }
+
+    fn fast_remove(&mut self, mut to_be_removed: Vec<usize>) {
+        if !to_be_removed.is_empty() {
+            to_be_removed.sort_unstable_by(|a, b| b.cmp(a));
+
+            let mut set_ref = &mut to_be_removed;
+            let start = set_ref.pop().unwrap();
+            let mut offset = 1;
+            let mut idx = start;
+            while idx + offset < self.array.len() {
+                if let Some(next_idx_to_be_removed) = set_ref.last() {
+                    if *next_idx_to_be_removed - offset == idx {
+                        offset += 1;
+                        set_ref.pop();
+                        continue
+                    }
+                }
+                self.array[idx] = self.array[idx + offset];
+                idx += 1;
+            }
+            self.array.truncate(idx);
         }
     }
 }
@@ -40,12 +71,35 @@ impl Container for ArrayContainer {
         }
     }
 
+    fn remove(&mut self, value: u16) -> bool {
+        self.array.binary_search(&value)
+                  .map_or(false, |idx| {
+                      self.array.remove(idx);
+                      true
+                  })
+    }
+
+    fn remove_values(&mut self, values: Vec<u16>) -> usize{
+        let mut to_be_removed: Vec<usize> = Vec::new();
+        values.iter()
+              .map(|v| self.array.binary_search(&v))
+              .filter(|p| p.is_ok())
+              .for_each(|p| to_be_removed.push(p.unwrap()));
+        let removed = to_be_removed.len();
+        self.fast_remove(to_be_removed);
+        removed
+    }
+
     fn cardinality (&self) -> usize {
         self.array.len()
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = u16> + '_> {
         Box::new(self.array.iter().copied())
+    }
+
+    fn contains(&self, value: u16) -> bool {
+        self.array.binary_search(&value).is_ok()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -79,11 +133,15 @@ impl BitmapContainer {
         let idx_inside_bucket = key as usize % U64_BITS;
         (bucket, idx_inside_bucket)
     }
+
+    fn is_one_at_position(&self, bucket: usize, idx_inside_bucket: usize) -> bool {
+        self.bitmap[bucket] & (1 << idx_inside_bucket) != 0
+    }
 }
 
 impl Container for BitmapContainer {
-    fn add(&mut self, key: u16) -> bool {
-        let (bucket, idx_inside_bucket) = Self::find_position_in_bitmap(key);
+    fn add(&mut self, value: u16) -> bool {
+        let (bucket, idx_inside_bucket) = Self::find_position_in_bitmap(value);
         let result = self.bitmap[bucket] & (1 << idx_inside_bucket) == 0;
         self.bitmap[bucket] |= 1 << idx_inside_bucket;
         if result {
@@ -92,12 +150,30 @@ impl Container for BitmapContainer {
         result
     }
 
+    fn remove(&mut self, value: u16) -> bool {
+        let (bucket, idx_inside_bucket) = Self::find_position_in_bitmap(value);
+        if self.is_one_at_position(bucket, idx_inside_bucket) {
+            self.bitmap[bucket] &= !(1 << idx_inside_bucket);
+            return true
+        }
+        false
+    }
+
+    fn remove_values(&mut self, values: Vec<u16>) -> usize {
+        values.into_iter().filter(|v| self.remove(*v)).count()
+    }
+
     fn cardinality(&self) -> usize {
         self.cardinality
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item=u16> + '_> {
         Box::new(BitmapIterator::new(&self.bitmap))
+    }
+
+    fn contains(&self, key: u16) -> bool {
+        let (bucket, idx_inside_bucket) = Self::find_position_in_bitmap(key);
+        self.is_one_at_position(bucket, idx_inside_bucket)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -155,10 +231,8 @@ impl RoaringBitmap {
         }
     }
 
-    pub fn insert(&mut self, number: u32) -> bool {
-        let key = (number >> 16) as u16;
-        let value = (number & 0xffff) as u16;
-
+    pub fn add(&mut self, number: u32) -> bool {
+        let (key, value) = Self::split_into_key_value(number);
 
         let mut result = false;
         match self.containers.get_mut(&key) {
@@ -188,19 +262,70 @@ impl RoaringBitmap {
         result
     }
 
-    pub fn from_iter(iter: impl Iterator<Item=u32>) -> RoaringBitmap {
-        let mut vec: Vec<u32> = iter.collect();
-        vec.sort();
+    pub fn remove(&mut self, number: u32) -> bool {
+        let (key, value) = Self::split_into_key_value(number);
+        if self.containers.get_mut(&key)
+                       .map_or(false, |container| {container.remove(value)}) {
+            self.cardinality -= 1;
+            return true
+        }
+        false
+    }
+
+    pub fn remove_range(&mut self, range: Range<u32>) {
+        let mut key_values_map: HashMap<u16, Vec<u16>> = HashMap::new();
+        range.map(Self::split_into_key_value)
+             .for_each(|(key, value)| key_values_map.entry(key).or_default().push(value));
+
+        for key_values in key_values_map {
+            match self.containers.get_mut(&key_values.0) {
+                None => {}
+                Some(container) => {
+                    self.cardinality -= container.remove_values(key_values.1);
+                }
+            }
+        }
+    }
+
+    pub fn cardinality(&self) -> usize {
+        self.cardinality
+    }
+
+    pub fn contains(&self, number: u32) -> bool {
+        let (key, value) = Self::split_into_key_value(number);
+        self.containers.get(&key)
+            .map_or(false, |container| container.contains(value))
+
+    }
+
+    pub fn from_range(range: Range<u32>) -> RoaringBitmap {
         let mut roaring_bitmap = RoaringBitmap::new();
 
-        for v in vec {
-            roaring_bitmap.insert(v);
+        for x in range {
+            roaring_bitmap.add(x);
         }
 
         roaring_bitmap
     }
 
-    pub fn cardinality(&self) -> usize {
-        self.cardinality
+    fn split_into_key_value(number: u32) -> (u16, u16) {
+        let key = (number >> U16_BITS) as u16;
+        let value = (number & 0xffff) as u16;
+        (key, value)
+    }
+}
+
+impl FromIterator<u32> for RoaringBitmap {
+    fn from_iter<T: IntoIterator<Item=u32>>(mut iter: T) -> Self {
+        let mut vec: Vec<u32> = iter.into_iter().collect();
+        vec.sort();
+
+        let mut roaring_bitmap = RoaringBitmap::new();
+
+        for v in vec {
+            roaring_bitmap.add(v);
+        }
+
+        roaring_bitmap
     }
 }
