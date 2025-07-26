@@ -1,32 +1,132 @@
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Range};
+use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
 
 const ARRAY_MAX_SIZE: usize = 4096;
 const BITMAP_SIZE: usize = 1024;
 const U64_BITS: usize = 64;
 const U16_BITS: usize = 16;
 
-pub trait Container: Any {
-    fn add(&mut self, value: u16) -> bool;
+enum Container {
+    Array(ArrayContainer),
+    Bitmap(BitmapContainer)
+}
 
-    fn remove(&mut self, value: u16) -> bool;
+impl Container {
+    fn add(&mut self, value: u16) -> bool {
+        match self {
+            Array(arrayContainer) => {
+                let added = arrayContainer.add(value);
+                if arrayContainer.should_upgrade() {
+                    *self = Bitmap(BitmapContainer::from_iter(arrayContainer.iter()))
+                }
+                added
+            }
+            Bitmap(bitmap) => {
+                bitmap.add(value)
+            }
+        }
+    }
 
-    fn remove_values(&mut self, values: Vec<u16>) -> usize;
+    fn remove(&mut self, value: u16) -> bool {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.remove(value)
+            }
+            Bitmap(bitmap) => {
+                bitmap.remove(value)
+            }
+        }
+    }
 
-    fn cardinality (&self) -> usize;
+    fn remove_values(&mut self, values: Vec<u16>) -> usize {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.remove_values(values)
+            }
+            Bitmap(bitmap) => {
+                bitmap.remove_values(values)
+            }
+        }
+    }
 
-    fn iter(&self) -> Box<dyn Iterator<Item = u16> + '_>;
+    fn cardinality(&self) -> usize {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.cardinality()
+            }
+            Bitmap(bitmap) => {
+                bitmap.cardinality()
+            }
+        }
+    }
 
-    fn contains(&self, value: u16) -> bool;
+    fn iter(&self) -> Box<dyn Iterator<Item=u16> + '_> {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.iter()
+            }
+            Bitmap(bitmap) => {
+                bitmap.iter()
+            }
+        }
+    }
 
-    fn as_any(&self) -> &dyn Any;
+    fn contains(&self, value: u16) -> bool {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.contains(value)
+            }
+            Bitmap(bitmap) => {
+                bitmap.contains(value)
+            }
+        }
+    }
 
-    fn is_empty(&self) -> bool;
+    fn as_any(&self) -> &dyn Any {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.as_any()
+            }
+            Bitmap(bitmap) => {
+                bitmap.as_any()
+            }
+        }
+    }
 
-    fn minimum(&self) -> Option<u16>;
+    fn is_empty(&self) -> bool {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.is_empty()
+            }
+            Bitmap(bitmap) => {
+                bitmap.is_empty()
+            }
+        }
+    }
 
-    fn maximum(&self) -> Option<u16>;
+    fn minimum(&self) -> Option<u16> {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.minimum()
+            }
+            Bitmap(bitmap) => {
+                bitmap.minimum()
+            }
+        }
+    }
+
+    fn maximum(&self) -> Option<u16> {
+        match self {
+            Array(arrayContainer) => {
+                arrayContainer.maximum()
+            }
+            Bitmap(bitmap) => {
+                bitmap.maximum()
+            }
+        }
+    }
 }
 
 pub struct ArrayContainer {
@@ -38,6 +138,10 @@ impl ArrayContainer {
         ArrayContainer {
             array: Vec::new()
         }
+    }
+
+    fn should_upgrade(&self) -> bool {
+        self.cardinality() >= ARRAY_MAX_SIZE
     }
 
     fn fast_remove(&mut self, mut to_be_removed: Vec<usize>) {
@@ -62,9 +166,7 @@ impl ArrayContainer {
             self.array.truncate(idx);
         }
     }
-}
 
-impl Container for ArrayContainer {
     fn add(&mut self, value: u16) -> bool {
         match self.array.binary_search(&value) {
             Ok(_) => {
@@ -155,9 +257,7 @@ impl BitmapContainer {
     fn is_one_at_position(&self, bucket: usize, idx_inside_bucket: usize) -> bool {
         self.bitmap[bucket] & (1 << idx_inside_bucket) != 0
     }
-}
 
-impl Container for BitmapContainer {
     fn add(&mut self, value: u16) -> bool {
         let (bucket, idx_inside_bucket) = Self::find_position_in_bitmap(value);
         let result = self.bitmap[bucket] & (1 << idx_inside_bucket) == 0;
@@ -262,7 +362,7 @@ impl<'a> Iterator for BitmapIterator<'a> {
 }
 
 pub struct RoaringBitmap {
-    containers: BTreeMap<u16, Box<dyn Container>>,
+    containers: BTreeMap<u16, Container>,
     cardinality: usize
 }
 
@@ -277,32 +377,22 @@ impl RoaringBitmap {
     pub fn add(&mut self, number: u32) -> bool {
         let (key, value) = Self::split_into_key_value(number);
 
-        let mut result = false;
+        let mut added = false;
         match self.containers.get_mut(&key) {
             None => {
                 let mut array_container = ArrayContainer::new();
-                result = array_container.add(value);
-                self.containers.insert(key, Box::new(array_container));
+                added = array_container.add(value);
+                self.containers.insert(key, Array(array_container));
             }
             Some(container) => {
-                if let Some(array_container) = container.as_any().downcast_ref::<ArrayContainer>() {
-                    if array_container.cardinality() >= ARRAY_MAX_SIZE {
-                        let mut bitmap = BitmapContainer::from_iter(array_container.iter());
-                        result = bitmap.add(value);
-                        self.containers.insert(key, Box::new(bitmap));
-                    } else {
-                        result = container.add(value);
-                    }
-                } else {
-                    result = container.add(value)
-                }
+                added = container.add(value)
             }
         };
 
-        if result {
+        if added {
             self.cardinality += 1;
         }
-        result
+        added
     }
 
     pub fn remove(&mut self, number: u32) -> bool {
