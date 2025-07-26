@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::ops::{Range};
 
 const ARRAY_MAX_SIZE: usize = 4096;
@@ -21,6 +21,12 @@ pub trait Container: Any {
     fn contains(&self, value: u16) -> bool;
 
     fn as_any(&self) -> &dyn Any;
+
+    fn is_empty(&self) -> bool;
+
+    fn minimum(&self) -> Option<u16>;
+
+    fn maximum(&self) -> Option<u16>;
 }
 
 pub struct ArrayContainer {
@@ -105,6 +111,18 @@ impl Container for ArrayContainer {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn is_empty(&self) -> bool {
+        self.cardinality() == 0
+    }
+
+    fn minimum(&self) -> Option<u16> {
+        self.array.first().copied()
+    }
+
+    fn maximum(&self) -> Option<u16> {
+        self.array.last().copied()
+    }
 }
 
 pub struct BitmapContainer {
@@ -179,6 +197,32 @@ impl Container for BitmapContainer {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn is_empty(&self) -> bool {
+        self.cardinality == 0
+    }
+
+    fn minimum(&self) -> Option<u16> {
+        self.iter().next()
+    }
+
+    fn maximum(&self) -> Option<u16> {
+        let mut back_bucket_idx = BITMAP_SIZE - 1;
+        let mut back_bit_idx = U64_BITS - 1;
+        while back_bucket_idx >= 0 {
+            let bucket = self.bitmap[back_bucket_idx];
+            while back_bit_idx >= 0 {
+                let bit = back_bit_idx;
+                back_bit_idx -= 1;
+                if (bucket & (1u64 << bit)) != 0 {
+                    return Some((back_bucket_idx * U64_BITS + bit) as u16);
+                }
+            }
+            back_bucket_idx -= 1;
+            back_bit_idx = U64_BITS - 1;
+        }
+        None
+    }
 }
 
 pub struct BitmapIterator<'a> {
@@ -192,7 +236,7 @@ impl<'a> BitmapIterator<'a> {
         BitmapIterator {
             bitmap,
             bucket_idx: 0,
-            bit_idx: 0,
+            bit_idx: 0
         }
     }
 }
@@ -216,7 +260,6 @@ impl<'a> Iterator for BitmapIterator<'a> {
         None
     }
 }
-
 
 pub struct RoaringBitmap {
     containers: BTreeMap<u16, Box<dyn Container>>,
@@ -306,6 +349,24 @@ impl RoaringBitmap {
         }
 
         roaring_bitmap
+    }
+
+    pub fn minimum(&self) -> Option<u32> {
+        self.containers.first_key_value()
+                       .map_or(None, |(key, container)|
+                                        {
+                                            container.minimum()
+                                                     .map_or(None, |minimum| Some(((*key as u32) << 16) + minimum as u32))
+                                        })
+    }
+
+    pub fn maximum(&self) -> Option<u32> {
+        self.containers.last_key_value()
+            .map_or(None, |(key, container)|
+                {
+                    container.maximum()
+                             .map_or(None, |maximum| Some(((*key as u32) << 16) + maximum as u32))
+                })
     }
 
     fn split_into_key_value(number: u32) -> (u16, u16) {
