@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::{Range};
 use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
 
@@ -7,7 +7,9 @@ const ARRAY_MAX_SIZE: usize = 4096;
 const BITMAP_SIZE: usize = 1024;
 const U64_BITS: usize = 64;
 const U16_BITS: usize = 16;
+const LOW_16_BITS: u32 = 0xffff;
 
+#[derive(Clone, PartialOrd, PartialEq)]
 enum Container {
     Array(ArrayContainer),
     Bitmap(BitmapContainer)
@@ -16,119 +18,131 @@ enum Container {
 impl Container {
     fn add(&mut self, value: u16) -> bool {
         match self {
-            Array(arrayContainer) => {
-                let added = arrayContainer.add(value);
-                if arrayContainer.should_upgrade() {
-                    *self = Bitmap(BitmapContainer::from_iter(arrayContainer.iter()))
+            Array(array_container) => {
+                let added = array_container.add(value);
+                if array_container.should_upgrade() {
+                    *self = Bitmap(BitmapContainer::from_iter(array_container.iter()))
                 }
                 added
             }
-            Bitmap(bitmap) => {
-                bitmap.add(value)
+            Bitmap(bitmap_container) => {
+                bitmap_container.add(value)
             }
         }
     }
 
     fn remove(&mut self, value: u16) -> bool {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.remove(value)
+            Array(array_container) => {
+                array_container.remove(value)
             }
-            Bitmap(bitmap) => {
-                bitmap.remove(value)
+            Bitmap(bitmap_container) => {
+                bitmap_container.remove(value)
             }
         }
     }
 
     fn remove_values(&mut self, values: Vec<u16>) -> usize {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.remove_values(values)
+            Array(array_container) => {
+                array_container.remove_values(values)
             }
-            Bitmap(bitmap) => {
-                bitmap.remove_values(values)
+            Bitmap(bitmap_container) => {
+                bitmap_container.remove_values(values)
             }
         }
     }
 
     fn cardinality(&self) -> usize {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.cardinality()
+            Array(array_container) => {
+                array_container.cardinality()
             }
-            Bitmap(bitmap) => {
-                bitmap.cardinality()
+            Bitmap(bitmap_container) => {
+                bitmap_container.cardinality()
             }
         }
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item=u16> + '_> {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.iter()
+            Array(array_container) => {
+                array_container.iter()
             }
-            Bitmap(bitmap) => {
-                bitmap.iter()
+            Bitmap(bitmap_container) => {
+                bitmap_container.iter()
             }
         }
     }
 
     fn contains(&self, value: u16) -> bool {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.contains(value)
+            Array(array_container) => {
+                array_container.contains(value)
             }
-            Bitmap(bitmap) => {
-                bitmap.contains(value)
+            Bitmap(bitmap_container) => {
+                bitmap_container.contains(value)
             }
         }
     }
 
     fn as_any(&self) -> &dyn Any {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.as_any()
+            Array(array_container) => {
+                array_container.as_any()
             }
-            Bitmap(bitmap) => {
-                bitmap.as_any()
+            Bitmap(bitmap_container) => {
+                bitmap_container.as_any()
             }
         }
     }
 
     fn is_empty(&self) -> bool {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.is_empty()
+            Array(array_container) => {
+                array_container.is_empty()
             }
-            Bitmap(bitmap) => {
-                bitmap.is_empty()
+            Bitmap(bitmap_container) => {
+                bitmap_container.is_empty()
             }
         }
     }
 
     fn minimum(&self) -> Option<u16> {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.minimum()
+            Array(array_container) => {
+                array_container.minimum()
             }
-            Bitmap(bitmap) => {
-                bitmap.minimum()
+            Bitmap(bitmap_container) => {
+                bitmap_container.minimum()
             }
         }
     }
 
     fn maximum(&self) -> Option<u16> {
         match self {
-            Array(arrayContainer) => {
-                arrayContainer.maximum()
+            Array(array_container) => {
+                array_container.maximum()
             }
-            Bitmap(bitmap) => {
-                bitmap.maximum()
+            Bitmap(bitmap_container) => {
+                bitmap_container.maximum()
+            }
+        }
+    }
+
+    fn union(&self, other: &Container) -> Container {
+        match self {
+            Array(array_container) => {
+                array_container.union(other)
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.union(other)
             }
         }
     }
 }
 
+#[derive(Clone, PartialEq, PartialOrd)]
 pub struct ArrayContainer {
     array: Vec<u16>
 }
@@ -225,8 +239,26 @@ impl ArrayContainer {
     fn maximum(&self) -> Option<u16> {
         self.array.last().copied()
     }
+
+    fn union(&self, other: &Container) -> Container {
+        match other {
+            Array(other_array_container) => {
+                let mut union_set: BTreeSet<u16> = BTreeSet::from_iter(self.array.iter().copied());
+                union_set.extend(other_array_container.array.iter().copied());
+                if union_set.len() >= ARRAY_MAX_SIZE {
+                    Bitmap(BitmapContainer::from_iter(union_set.into_iter()))
+                } else {
+                    Array(ArrayContainer { array: Vec::from_iter(union_set.into_iter()) })
+                }
+            }
+            Bitmap(other_bitmap_container) => {
+                other_bitmap_container.union_with_array_container(&self)
+            }
+        }
+    }
 }
 
+#[derive(Clone, PartialEq, PartialOrd)]
 pub struct BitmapContainer {
     bitmap: [u64; BITMAP_SIZE],
     cardinality: usize
@@ -322,6 +354,34 @@ impl BitmapContainer {
             back_bit_idx = U64_BITS - 1;
         }
         None
+    }
+
+    fn union(&self, other: &Container) -> Container {
+        match other {
+            Array(other_array_container) => {
+                self.union_with_array_container(other_array_container)
+            }
+            Bitmap(other_bitmap_container) => {
+                let mut union_bitmap: [u64; BITMAP_SIZE] = [0; BITMAP_SIZE];
+                for i in 0..BITMAP_SIZE {
+                    union_bitmap[i] = self.bitmap[i] | other_bitmap_container.bitmap[i];
+                }
+                let cardinality: u32 = union_bitmap.iter().map(|l| l.count_ones()).sum();
+                Bitmap(BitmapContainer {
+                    bitmap: union_bitmap,
+                    cardinality: cardinality as usize
+                })
+            }
+        }
+    }
+
+    fn union_with_array_container(&self, array_container: &ArrayContainer) -> Container {
+        let mut union_bitmap = BitmapContainer {
+            bitmap: self.bitmap.clone(),
+            cardinality: self.cardinality()
+        };
+        array_container.array.iter().for_each(|v| {union_bitmap.add(*v);});
+        Bitmap(union_bitmap)
     }
 }
 
@@ -459,9 +519,26 @@ impl RoaringBitmap {
                 })
     }
 
+    pub fn union(&self, other: &RoaringBitmap) -> RoaringBitmap {
+        let mut union_bitmap = RoaringBitmap::new();
+        for (key, container) in &self.containers {
+            let container1 = container.clone();
+            union_bitmap.containers.insert(*key, container1);
+        }
+        for (key, container) in &other.containers {
+            union_bitmap.containers.entry(*key)
+                .and_modify(|other_container| {*other_container = other_container.union(&container);})
+                .or_insert(container.clone());
+        }
+        union_bitmap.cardinality = union_bitmap.containers.iter()
+                                                          .map(|(_, container)| container.cardinality())
+                                                          .sum();
+        union_bitmap
+    }
+
     fn split_into_key_value(number: u32) -> (u16, u16) {
         let key = (number >> U16_BITS) as u16;
-        let value = (number & 0xffff) as u16;
+        let value = (number & LOW_16_BITS) as u16;
         (key, value)
     }
 }
