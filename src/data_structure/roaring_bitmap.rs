@@ -1,6 +1,6 @@
-use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::ops::{Range};
+use std::cmp::{max, min};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ops::{BitAnd, BitOr, Range};
 use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
 
 const ARRAY_MAX_SIZE: usize = 4096;
@@ -21,7 +21,8 @@ impl Container {
             Array(array_container) => {
                 let added = array_container.add(value);
                 if array_container.should_upgrade() {
-                    *self = Bitmap(BitmapContainer::from_iter(array_container.iter()))
+                    let new_container = std::mem::take(array_container).upgrade();
+                    *self = Bitmap(new_container);
                 }
                 added
             }
@@ -86,17 +87,6 @@ impl Container {
         }
     }
 
-    fn as_any(&self) -> &dyn Any {
-        match self {
-            Array(array_container) => {
-                array_container.as_any()
-            }
-            Bitmap(bitmap_container) => {
-                bitmap_container.as_any()
-            }
-        }
-    }
-
     fn is_empty(&self) -> bool {
         match self {
             Array(array_container) => {
@@ -140,9 +130,20 @@ impl Container {
             }
         }
     }
+
+    fn intersect(&self, other: &Container) -> Container {
+        match self {
+            Array(array_container) => {
+                array_container.intersect(other)
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.intersect(other)
+            }
+        }
+    }
 }
 
-#[derive(Clone, PartialEq, PartialOrd)]
+#[derive(Clone, PartialEq, PartialOrd, Default)]
 pub struct ArrayContainer {
     array: Vec<u16>
 }
@@ -158,7 +159,11 @@ impl ArrayContainer {
         self.cardinality() >= ARRAY_MAX_SIZE
     }
 
-    fn fast_remove(&mut self, mut to_be_removed: Vec<usize>) {
+    fn upgrade(self) -> BitmapContainer {
+        BitmapContainer::from_iter(self.iter())
+    }
+
+    fn batch_remove(&mut self, mut to_be_removed: Vec<usize>) {
         if !to_be_removed.is_empty() {
             to_be_removed.sort_unstable_by(|a, b| b.cmp(a));
 
@@ -208,7 +213,7 @@ impl ArrayContainer {
               .filter(|p| p.is_ok())
               .for_each(|p| to_be_removed.push(p.unwrap()));
         let removed = to_be_removed.len();
-        self.fast_remove(to_be_removed);
+        self.batch_remove(to_be_removed);
         removed
     }
 
@@ -222,10 +227,6 @@ impl ArrayContainer {
 
     fn contains(&self, value: u16) -> bool {
         self.array.binary_search(&value).is_ok()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn is_empty(&self) -> bool {
@@ -256,18 +257,49 @@ impl ArrayContainer {
             }
         }
     }
+    
+    fn intersect(&self, other: &Container) -> Container {
+        match other {
+            Array(other_array_container) => {
+                if self.is_empty() || other.is_empty() {
+                    return Array(ArrayContainer { array: vec![] });
+                }
+
+                let self_min = self.minimum().unwrap();
+                let self_max = self.maximum().unwrap();
+                let other_min = other.minimum().unwrap();
+                let other_max = other.maximum().unwrap();
+
+                if max(self_min, other_min) > min(self_max, other_max) {
+                    // no overlap
+                    return Array(ArrayContainer { array: vec![] });
+                }
+
+                let set: HashSet<u16> = HashSet::from_iter(self.array.iter().copied());
+                let intersection: Vec<u16> = other_array_container.array
+                                                                  .iter()
+                                                                  .copied()
+                                                                  .filter(|v| set.contains(v))
+                                                                  .collect();
+                Array(ArrayContainer { array: intersection })
+            }
+            Bitmap(other_bitmap_container) => {
+                other_bitmap_container.intersect_with_array_container(&self)
+            }
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, PartialOrd)]
 pub struct BitmapContainer {
-    bitmap: [u64; BITMAP_SIZE],
+    bitmap: Vec<u64>,
     cardinality: usize
 }
 
 impl BitmapContainer {
     pub fn new() -> BitmapContainer {
         BitmapContainer {
-            bitmap: [0; BITMAP_SIZE],
+            bitmap: vec![0; BITMAP_SIZE],
             cardinality: 0
         }
     }
@@ -326,10 +358,6 @@ impl BitmapContainer {
         self.is_one_at_position(bucket, idx_inside_bucket)
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn is_empty(&self) -> bool {
         self.cardinality == 0
     }
@@ -362,11 +390,14 @@ impl BitmapContainer {
                 self.union_with_array_container(other_array_container)
             }
             Bitmap(other_bitmap_container) => {
-                let mut union_bitmap: [u64; BITMAP_SIZE] = [0; BITMAP_SIZE];
+                let mut union_bitmap = vec![0; BITMAP_SIZE];
+                let mut cardinality = 0;
+
                 for i in 0..BITMAP_SIZE {
                     union_bitmap[i] = self.bitmap[i] | other_bitmap_container.bitmap[i];
+                    cardinality += union_bitmap[i].count_ones();
                 }
-                let cardinality: u32 = union_bitmap.iter().map(|l| l.count_ones()).sum();
+
                 Bitmap(BitmapContainer {
                     bitmap: union_bitmap,
                     cardinality: cardinality as usize
@@ -380,19 +411,80 @@ impl BitmapContainer {
             bitmap: self.bitmap.clone(),
             cardinality: self.cardinality()
         };
-        array_container.array.iter().for_each(|v| {union_bitmap.add(*v);});
+        array_container.array.iter()
+                             .copied()
+                             .for_each(|v| {union_bitmap.add(v);});
         Bitmap(union_bitmap)
+    }
+
+    fn intersect(&self, other: &Container) -> Container {
+        match other {
+            Array(array_container) => {
+                self.intersect_with_array_container(array_container)
+            }
+            Bitmap(bitmap_container) => {
+                let mut bitmap = Vec::with_capacity(BITMAP_SIZE);
+                let mut cardinality = 0;
+
+                for (a, b) in self.bitmap.iter().zip(&bitmap_container.bitmap) {
+                    let word = a & b;
+                    cardinality += word.count_ones() as usize;
+                    bitmap.push(word);
+                }
+                let bitmap_container = BitmapContainer {
+                    bitmap,
+                    cardinality
+                };
+                if bitmap_container.should_downgrade() {
+                    Array(bitmap_container.downgrade())
+                } else {
+                    Bitmap(bitmap_container)
+                }
+            }
+        }
+    }
+    
+    fn intersect_with_array_container(&self, array_container: &ArrayContainer) -> Container {
+        if array_container.is_empty() {
+            return Array(ArrayContainer { array: vec![] });
+        }
+
+        let self_min = self.minimum().unwrap();
+        let self_max = self.maximum().unwrap();
+        let other_min = array_container.minimum().unwrap();
+        let other_max = array_container.maximum().unwrap();
+
+        if max(self_min, other_min) > min(self_max, other_max) {
+            // no overlap
+            return Array(ArrayContainer { array: vec![] });
+        }
+
+        let mut intersection = Array(ArrayContainer::new());
+        for v in array_container.array.iter().copied() {
+            if self.contains(v) {
+                intersection.add(v);
+            }
+        }
+        intersection
+    }
+
+    fn should_downgrade(&self) -> bool {
+        self.cardinality < ARRAY_MAX_SIZE
+    }
+
+    fn downgrade(self) -> ArrayContainer {
+        ArrayContainer { array: self.iter().into_iter().collect() }
     }
 }
 
 pub struct BitmapIterator<'a> {
-    bitmap: &'a [u64; BITMAP_SIZE],
+    bitmap: &'a Vec<u64>,
     bucket_idx: usize,
     bit_idx: usize,
 }
 
 impl<'a> BitmapIterator<'a> {
-    pub fn new(bitmap: &'a [u64; BITMAP_SIZE]) -> BitmapIterator {
+    pub fn new(bitmap: &'a Vec<u64>) -> BitmapIterator {
         BitmapIterator {
             bitmap,
             bucket_idx: 0,
@@ -522,18 +614,35 @@ impl RoaringBitmap {
     pub fn union(&self, other: &RoaringBitmap) -> RoaringBitmap {
         let mut union_bitmap = RoaringBitmap::new();
         for (key, container) in &self.containers {
-            let container1 = container.clone();
-            union_bitmap.containers.insert(*key, container1);
+            if !other.containers.contains_key(key) {
+                union_bitmap.containers.insert(*key, container.clone());
+            }
         }
         for (key, container) in &other.containers {
-            union_bitmap.containers.entry(*key)
-                .and_modify(|other_container| {*other_container = other_container.union(&container);})
-                .or_insert(container.clone());
+            if self.containers.contains_key(key) {
+                union_bitmap.containers.insert(*key, self.containers[key].union(container));
+            } else {
+                union_bitmap.containers.insert(*key, container.clone());
+            }
         }
         union_bitmap.cardinality = union_bitmap.containers.iter()
                                                           .map(|(_, container)| container.cardinality())
                                                           .sum();
         union_bitmap
+    }
+
+    pub fn intersection(&self, other: &RoaringBitmap) -> RoaringBitmap {
+        let mut intersection_bitmap = RoaringBitmap::new();
+        let keys1: HashSet<u16> = self.containers.keys().cloned().collect();
+        let keys2: HashSet<u16> = other.containers.keys().cloned().collect();
+
+        let intersection_keys: HashSet<u16> = keys1.intersection(&keys2).copied().collect();
+        for v in intersection_keys {
+            let intersect_container = self.containers[&v].intersect(&other.containers[&v]);
+            intersection_bitmap.cardinality += intersect_container.cardinality();
+            intersection_bitmap.containers.insert(v, intersect_container);
+        }
+        intersection_bitmap
     }
 
     fn split_into_key_value(number: u32) -> (u16, u16) {
@@ -555,5 +664,21 @@ impl FromIterator<u32> for RoaringBitmap {
         }
 
         roaring_bitmap
+    }
+}
+
+impl BitAnd for &RoaringBitmap {
+    type Output = RoaringBitmap;
+
+    fn bitand(self, rhs: &RoaringBitmap) -> RoaringBitmap {
+        self.intersection(&rhs)
+    }
+}
+
+impl BitOr for &RoaringBitmap {
+    type Output = RoaringBitmap;
+
+    fn bitor(self, rhs: &RoaringBitmap) -> RoaringBitmap {
+        self.union(&rhs)
     }
 }
