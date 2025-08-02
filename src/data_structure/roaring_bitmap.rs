@@ -1,6 +1,6 @@
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ops::{BitAnd, BitOr, Range};
+use std::ops::{BitAnd, BitOr, Range, Sub};
 use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
 
 const ARRAY_MAX_SIZE: usize = 4096;
@@ -140,6 +140,37 @@ impl Container {
                 bitmap_container.intersect(other)
             }
         }
+    }
+
+    fn difference(&self, other: &Container) -> Container {
+        match self {
+            Array(array_container) => {
+                array_container.difference(other)
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.difference(other)
+            }
+        }
+    }
+
+    fn symmetric_difference(&self, other: &Container) -> Container {
+        todo!()
+    }
+
+    fn intersects(&self, other: &Container) -> bool	{
+        todo!()
+    }
+
+    fn is_subset(&self, other: &Container) -> bool {
+        todo!()
+    }
+
+    fn select(n: u32) -> Option<u32> {
+        todo!()
+    }
+
+    fn rank(value: u32) -> u32 {
+        todo!()
     }
 }
 
@@ -286,6 +317,34 @@ impl ArrayContainer {
             Bitmap(other_bitmap_container) => {
                 other_bitmap_container.intersect_with_array_container(&self)
             }
+        }
+    }
+
+    pub fn difference(&self, container: &Container) -> Container {
+        match container {
+            Array(array_container) => {
+                let set: HashSet<u16> = HashSet::from_iter(array_container.array.iter().copied());
+                let difference: Vec<u16> = self.array.iter()
+                                                     .copied()
+                                                     .filter(|v| !set.contains(v))
+                                                     .collect();
+                Array(ArrayContainer { array: difference })
+            }
+            Bitmap(bitmap_container) => {
+                let difference: Vec<u16> = self.array.iter()
+                                               .copied()
+                                               .filter(|v| !bitmap_container.contains(*v))
+                                               .collect();
+                Array(ArrayContainer { array: difference })
+            }
+        }
+    }
+
+    pub fn to_best_container(self) -> Container {
+        if self.should_upgrade() {
+            Bitmap(self.upgrade())
+        } else {
+            Array(self)
         }
     }
 }
@@ -475,6 +534,37 @@ impl BitmapContainer {
     fn downgrade(self) -> ArrayContainer {
         ArrayContainer { array: self.iter().into_iter().collect() }
     }
+
+    pub fn difference(&self, other: &Container) -> Container {
+        match other {
+            Array(array_container) => {
+                let difference: Vec<u16> = self.iter().filter(|v| !array_container.contains(*v)).collect();
+                ArrayContainer { array: difference }.to_best_container()
+            }
+            Bitmap(bitmap_container) => {
+                let mut cardinality = 0;
+                let mut difference_bitmap = Vec::with_capacity(BITMAP_SIZE);
+                for i in 0..BITMAP_SIZE {
+                    let word = self.bitmap[i] & (!bitmap_container.bitmap[i]);
+                    difference_bitmap.push(word);
+                    cardinality += word.count_ones();
+                }
+                let bitmap_container = BitmapContainer {
+                    bitmap: difference_bitmap,
+                    cardinality: cardinality as usize
+                };
+                bitmap_container.to_best_container()
+            }
+        }
+    }
+
+    fn to_best_container(self) -> Container {
+        if self.should_downgrade() {
+            Array(self.downgrade())
+        } else {
+            Bitmap(self)
+        }
+    }
 }
 
 pub struct BitmapIterator<'a> {
@@ -612,23 +702,25 @@ impl RoaringBitmap {
     }
 
     pub fn union(&self, other: &RoaringBitmap) -> RoaringBitmap {
-        let mut union_bitmap = RoaringBitmap::new();
-        for (key, container) in &self.containers {
-            if !other.containers.contains_key(key) {
-                union_bitmap.containers.insert(*key, container.clone());
-            }
-        }
+        let mut union_roaring_bitmap = RoaringBitmap::new();
+        self.containers.iter()
+            .filter(|(key, container)| !other.containers.contains_key(key))
+            .for_each(|(key, container)| {
+                union_roaring_bitmap.cardinality += container.cardinality();
+                union_roaring_bitmap.containers.insert(*key, container.clone());
+            });
+
         for (key, container) in &other.containers {
             if self.containers.contains_key(key) {
-                union_bitmap.containers.insert(*key, self.containers[key].union(container));
+                let union_container = self.containers[key].union(container);
+                union_roaring_bitmap.cardinality += union_container.cardinality();
+                union_roaring_bitmap.containers.insert(*key, union_container);
             } else {
-                union_bitmap.containers.insert(*key, container.clone());
+                union_roaring_bitmap.cardinality += container.cardinality();
+                union_roaring_bitmap.containers.insert(*key, container.clone());
             }
         }
-        union_bitmap.cardinality = union_bitmap.containers.iter()
-                                                          .map(|(_, container)| container.cardinality())
-                                                          .sum();
-        union_bitmap
+        union_roaring_bitmap
     }
 
     pub fn intersection(&self, other: &RoaringBitmap) -> RoaringBitmap {
@@ -649,6 +741,33 @@ impl RoaringBitmap {
         let key = (number >> U16_BITS) as u16;
         let value = (number & LOW_16_BITS) as u16;
         (key, value)
+    }
+
+    fn difference(&self, other: &RoaringBitmap) -> RoaringBitmap {
+        let mut difference_bitmap = RoaringBitmap::new();
+        for (key, container) in &self.containers {
+            if !other.containers.contains_key(key) {
+                difference_bitmap.containers.insert(*key, container.clone());
+                difference_bitmap.cardinality += container.cardinality();
+            } else {
+                let difference_container = container.difference(&other.containers[key]);
+                difference_bitmap.cardinality += difference_container.cardinality();
+                difference_bitmap.containers.insert(*key, difference_container);
+            }
+        }
+        difference_bitmap
+    }
+
+    pub fn to_array(&self) -> Vec<u32> {
+        let mut array: Vec<u32> = Vec::with_capacity(self.cardinality);
+        for (key, container) in &self.containers {
+            let left_16 = (*key as u32) << 16;
+            container.iter()
+                .for_each(|v| {
+                array.push(left_16 + v as u32);
+            });
+        }
+        array
     }
 }
 
@@ -671,7 +790,7 @@ impl BitAnd for &RoaringBitmap {
     type Output = RoaringBitmap;
 
     fn bitand(self, rhs: &RoaringBitmap) -> RoaringBitmap {
-        self.intersection(&rhs)
+        self.intersection(rhs)
     }
 }
 
@@ -679,6 +798,14 @@ impl BitOr for &RoaringBitmap {
     type Output = RoaringBitmap;
 
     fn bitor(self, rhs: &RoaringBitmap) -> RoaringBitmap {
-        self.union(&rhs)
+        self.union(rhs)
+    }
+}
+
+impl Sub for &RoaringBitmap {
+    type Output = RoaringBitmap;
+
+    fn sub(self, rhs: &RoaringBitmap) -> Self::Output {
+        self.difference(rhs)
     }
 }
