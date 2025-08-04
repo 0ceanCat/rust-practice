@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::{BitAnd, BitOr, Range, Sub};
+use std::ops::Bound::Excluded;
 use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
 
 const ARRAY_MAX_SIZE: usize = 4096;
@@ -758,18 +759,64 @@ impl RoaringBitmap {
         difference_bitmap
     }
 
+    pub fn iter(&self) -> RoaringBitmapIter {
+        RoaringBitmapIter::new(self)
+    }
+
     pub fn to_array(&self) -> Vec<u32> {
         let mut array: Vec<u32> = Vec::with_capacity(self.cardinality);
         for (key, container) in &self.containers {
-            let left_16 = (*key as u32) << 16;
+            let high_16 = (*key as u32) << 16;
             container.iter()
                 .for_each(|v| {
-                array.push(left_16 + v as u32);
+                array.push(high_16 + v as u32);
             });
         }
         array
     }
 }
+
+pub struct RoaringBitmapIter<'a> {
+    outer_iter: std::collections::btree_map::Iter<'a, u16, Container>,
+    current_inner: Option<(u16, Box<dyn Iterator<Item=u16> + 'a>)>,
+}
+
+impl<'a> RoaringBitmapIter<'a> {
+    pub fn new(bitmap: &'a RoaringBitmap) -> Self {
+        let mut outer_iter = bitmap.containers.iter();
+        let current_inner = outer_iter.next().map(|(&high_16, container)| {
+            (high_16, container.iter())
+        });
+
+        RoaringBitmapIter {
+            outer_iter,
+            current_inner,
+        }
+    }
+}
+
+impl<'a> Iterator for RoaringBitmapIter<'a> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some((high_16, ref mut inner)) = self.current_inner {
+                if let Some(low_16) = inner.next() {
+                    return Some(((high_16 as u32) << 16) | (low_16 as u32));
+                }
+            }
+
+            match self.outer_iter.next() {
+                Some((&hi, container)) => {
+                    self.current_inner = Some((hi, container.iter()));
+                }
+                None => return None
+            }
+        }
+    }
+}
+
+
 
 impl FromIterator<u32> for RoaringBitmap {
     fn from_iter<T: IntoIterator<Item=u32>>(mut iter: T) -> Self {
