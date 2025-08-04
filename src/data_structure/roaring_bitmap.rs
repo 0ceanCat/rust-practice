@@ -1,7 +1,6 @@
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::{BitAnd, BitOr, Range, Sub};
-use std::ops::Bound::Excluded;
 use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
 
 const ARRAY_MAX_SIZE: usize = 4096;
@@ -15,6 +14,16 @@ enum Container {
     Array(ArrayContainer),
     Bitmap(BitmapContainer)
 }
+
+fn has_overlap(container_a: &Container, container_b: &Container) -> bool {
+    let self_min = container_a.minimum().unwrap();
+    let self_max = container_a.maximum().unwrap();
+    let other_min = container_b.minimum().unwrap();
+    let other_max = container_b.maximum().unwrap();
+
+    max(self_min, other_min) <= min(self_max, other_max)
+}
+
 
 impl Container {
     fn add(&mut self, value: u16) -> bool {
@@ -135,12 +144,17 @@ impl Container {
     fn intersect(&self, other: &Container) -> Container {
         match self {
             Array(array_container) => {
-                array_container.intersect(other)
+                if has_overlap(self, other) {
+                    return array_container.intersect(other)
+                }
             }
             Bitmap(bitmap_container) => {
-                bitmap_container.intersect(other)
+                if has_overlap(self, other) {
+                    return bitmap_container.intersect(other)
+                }
             }
         }
+        Array(ArrayContainer::new())
     }
 
     fn difference(&self, other: &Container) -> Container {
@@ -159,7 +173,19 @@ impl Container {
     }
 
     fn intersects(&self, other: &Container) -> bool	{
-        todo!()
+        match self {
+            Array(array_container) => {
+                if has_overlap(self, other) {
+                    return array_container.intersects(other)
+                }
+            }
+            Bitmap(bitmap_container) => {
+                if has_overlap(self, other) {
+                    return bitmap_container.intersects(other)
+                }
+            }
+        }
+        false
     }
 
     fn is_subset(&self, other: &Container) -> bool {
@@ -293,20 +319,6 @@ impl ArrayContainer {
     fn intersect(&self, other: &Container) -> Container {
         match other {
             Array(other_array_container) => {
-                if self.is_empty() || other.is_empty() {
-                    return Array(ArrayContainer { array: vec![] });
-                }
-
-                let self_min = self.minimum().unwrap();
-                let self_max = self.maximum().unwrap();
-                let other_min = other.minimum().unwrap();
-                let other_max = other.maximum().unwrap();
-
-                if max(self_min, other_min) > min(self_max, other_max) {
-                    // no overlap
-                    return Array(ArrayContainer { array: vec![] });
-                }
-
                 let set: HashSet<u16> = HashSet::from_iter(self.array.iter().copied());
                 let intersection: Vec<u16> = other_array_container.array
                                                                   .iter()
@@ -321,7 +333,7 @@ impl ArrayContainer {
         }
     }
 
-    pub fn difference(&self, container: &Container) -> Container {
+    fn difference(&self, container: &Container) -> Container {
         match container {
             Array(array_container) => {
                 let set: HashSet<u16> = HashSet::from_iter(array_container.array.iter().copied());
@@ -341,11 +353,44 @@ impl ArrayContainer {
         }
     }
 
-    pub fn to_best_container(self) -> Container {
+    fn to_best_container(self) -> Container {
         if self.should_upgrade() {
             Bitmap(self.upgrade())
         } else {
             Array(self)
+        }
+    }
+
+    fn intersects(&self, other: &Container) -> bool	{
+        match other {
+            Array(array_container) => {
+                let max_v = min(self.minimum().unwrap(), array_container.minimum().unwrap());
+
+                let mut self_idx = self.array.binary_search(&max_v).unwrap_or_else(|i| i);
+                let mut other_idx = array_container.array.binary_search(&max_v).unwrap_or_else(|i| i);
+
+                loop {
+                    if self_idx >= self.array.len() || other_idx >= array_container.array.len() {
+                        return false
+                    }
+                    let self_v = self.array[self_idx];
+                    let other_v = array_container.array[other_idx];
+
+                    if self_v == other_v {
+                        return true
+                    }
+
+                    if self_v < other_v {
+                        self_idx += 1;
+                    } else {
+                        other_idx += 1;
+                    }
+
+                }
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.intersects_with_array_container(&self)
+            }
         }
     }
 }
@@ -505,20 +550,6 @@ impl BitmapContainer {
     }
     
     fn intersect_with_array_container(&self, array_container: &ArrayContainer) -> Container {
-        if array_container.is_empty() {
-            return Array(ArrayContainer { array: vec![] });
-        }
-
-        let self_min = self.minimum().unwrap();
-        let self_max = self.maximum().unwrap();
-        let other_min = array_container.minimum().unwrap();
-        let other_max = array_container.maximum().unwrap();
-
-        if max(self_min, other_min) > min(self_max, other_max) {
-            // no overlap
-            return Array(ArrayContainer { array: vec![] });
-        }
-
         let mut intersection = Array(ArrayContainer::new());
         for v in array_container.array.iter().copied() {
             if self.contains(v) {
@@ -565,6 +596,35 @@ impl BitmapContainer {
         } else {
             Bitmap(self)
         }
+    }
+
+    fn intersects(&self, other: &Container) -> bool {
+        match other {
+            Array(array_container) => {
+                return self.intersects_with_array_container(array_container)
+            }
+            Bitmap(bitmap_container) => {
+                let max_v = max(self.minimum().unwrap(), bitmap_container.minimum().unwrap());
+                let (bucket, _) = Self::find_position_in_bitmap(max_v);
+                for i in bucket..BITMAP_SIZE {
+                    if (self.bitmap[i] & bitmap_container.bitmap[i]) != 0 {
+                        return true
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn intersects_with_array_container(&self, array_container: &ArrayContainer) -> bool {
+        let max_v = max(self.minimum().unwrap(), array_container.minimum().unwrap());
+        let mut other_idx = array_container.array.binary_search(&max_v).unwrap_or_else(|i| i);
+        for i in other_idx..array_container.array.len() {
+            if self.contains(array_container.array[i]) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -744,7 +804,7 @@ impl RoaringBitmap {
         (key, value)
     }
 
-    fn difference(&self, other: &RoaringBitmap) -> RoaringBitmap {
+    pub fn difference(&self, other: &RoaringBitmap) -> RoaringBitmap {
         let mut difference_bitmap = RoaringBitmap::new();
         for (key, container) in &self.containers {
             if !other.containers.contains_key(key) {
@@ -773,6 +833,12 @@ impl RoaringBitmap {
             });
         }
         array
+    }
+
+    pub fn intersects(&self, other: &RoaringBitmap) -> bool {
+        other.containers.keys()
+            .filter(|k| self.containers.contains_key(k))
+            .any(|k| other.containers[k].intersects(&self.containers[k]))
     }
 }
 
