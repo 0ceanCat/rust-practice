@@ -11,6 +11,16 @@ const U16_BITS: usize = 16;
 const U16_BYTES: usize = 2;
 const LOW_16_BITS: u32 = 0xffff;
 
+macro_rules! compute_u32 {
+    ($key:expr, $value:expr) => {
+        {
+            let a: u16 = $key;
+            let b: u16 = $value;
+            ((a as u32) << 16)  + (b as u32)
+        }
+    };
+}
+
 #[derive(Clone, PartialOrd, PartialEq)]
 enum Container {
     Array(ArrayContainer),
@@ -194,8 +204,15 @@ impl Container {
         todo!()
     }
 
-    fn select(n: u32) -> Option<u32> {
-        todo!()
+    fn select(&self, idx: usize) -> Option<u16> {
+        match self {
+            Array(array_container) => {
+                array_container.select(idx)
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.select(idx)
+            }
+        }
     }
 
     fn rank(value: u32) -> u32 {
@@ -395,6 +412,10 @@ impl ArrayContainer {
             }
         }
     }
+
+    fn select(&self, idx: usize) -> Option<u16> {
+        self.array.get(idx).copied()
+    }
 }
 
 #[derive(Clone, PartialEq, PartialOrd)]
@@ -478,7 +499,7 @@ impl BitmapContainer {
         let mut back_bit_idx = U64_BITS - 1;
         while back_bucket_idx >= 0 {
             let bucket = self.bitmap[back_bucket_idx];
-            while back_bit_idx >= 0 {
+            while back_bit_idx >= 0 && bucket != 0 {
                 let bit = back_bit_idx;
                 back_bit_idx -= 1;
                 if (bucket & (1u64 << bit)) != 0 {
@@ -569,7 +590,7 @@ impl BitmapContainer {
         ArrayContainer { array: self.iter().into_iter().collect() }
     }
 
-    pub fn difference(&self, other: &Container) -> Container {
+    fn difference(&self, other: &Container) -> Container {
         match other {
             Array(array_container) => {
                 let difference: Vec<u16> = self.iter().filter(|v| !array_container.contains(*v)).collect();
@@ -628,6 +649,35 @@ impl BitmapContainer {
         }
         false
     }
+
+    fn select(&self, idx: usize) -> Option<u16> {
+        let mut bucket_idx = 0;
+        let mut bit_idx = 0;
+        let mut current_idx = 0;
+        let idx: u32 = idx as u32;
+
+        while bucket_idx < BITMAP_SIZE {
+            let bucket = self.bitmap[bucket_idx];
+            while bit_idx < U64_BITS && bucket != 0 {
+                if current_idx + bucket.count_ones() < idx + 1{
+                    current_idx += bucket.count_ones();
+                    break;
+                } else {
+                    let bit = bit_idx;
+                    bit_idx += 1;
+                    if (bucket & (1u64 << bit)) != 0 {
+                        if current_idx == idx {
+                            return Some((bucket_idx * U64_BITS + bit) as u16);
+                        }
+                        current_idx += 1;
+                    }
+                }
+            }
+            bucket_idx += 1;
+            bit_idx = 0;
+        }
+        None
+    }
 }
 
 pub struct BitmapIterator<'a> {
@@ -652,7 +702,7 @@ impl<'a> Iterator for BitmapIterator<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         while self.bucket_idx < BITMAP_SIZE {
             let bucket = self.bitmap[self.bucket_idx];
-            while self.bit_idx < U64_BITS {
+            while self.bit_idx < U64_BITS && bucket != 0 {
                 let bit = self.bit_idx;
                 self.bit_idx += 1;
                 if (bucket & (1u64 << bit)) != 0 {
@@ -751,7 +801,7 @@ impl RoaringBitmap {
                        .map_or(None, |(key, container)|
                                         {
                                             container.minimum()
-                                                     .map_or(None, |minimum| Some(((*key as u32) << 16) + minimum as u32))
+                                                     .map_or(None, |minimum| Some(compute_u32!(*key, minimum)))
                                         })
     }
 
@@ -760,7 +810,7 @@ impl RoaringBitmap {
             .map_or(None, |(key, container)|
                 {
                     container.maximum()
-                             .map_or(None, |maximum| Some(((*key as u32) << 16) + maximum as u32))
+                             .map_or(None, |maximum| Some(compute_u32!(*key, maximum)))
                 })
     }
 
@@ -828,11 +878,10 @@ impl RoaringBitmap {
     pub fn to_array(&self) -> Vec<u32> {
         let mut array: Vec<u32> = Vec::with_capacity(self.cardinality);
         for (key, container) in &self.containers {
-            let high_16 = (*key as u32) << 16;
             container.iter()
                 .for_each(|v| {
-                array.push(high_16 + v as u32);
-            });
+                    array.push(compute_u32!(*key, v));
+                });
         }
         array
     }
@@ -841,6 +890,20 @@ impl RoaringBitmap {
         other.containers.keys()
             .filter(|k| self.containers.contains_key(k))
             .any(|k| other.containers[k].intersects(&self.containers[k]))
+    }
+
+    pub fn select(&self, idx: usize) -> Option<u32> {
+        match self.containers.first_key_value() {
+            None => None,
+            Some((key, container)) => {
+                match container.select(idx) {
+                    None => None,
+                    Some(v) => {
+                        Some(compute_u32!(*key, v))
+                    }
+                }
+            }
+        }
     }
 
     pub fn describe(&self) {
@@ -860,7 +923,6 @@ impl RoaringBitmap {
                 }
             }
         }
-
 
         println!("cardinality: {}\narray containers: {}\nbitmap containers: {}\nmin: {:?}\nmax: {:?}\nspace: {:?}", self.cardinality(), array_containers, bitmap_containers, self.minimum(), self.maximum(), space_occupied);
     }
@@ -892,7 +954,7 @@ impl<'a> Iterator for RoaringBitmapIter<'a> {
         loop {
             if let Some((high_16, ref mut inner)) = self.current_inner {
                 if let Some(low_16) = inner.next() {
-                    return Some(((high_16 as u32) << 16) | (low_16 as u32));
+                    return Some(compute_u32!(high_16, low_16));
                 }
             }
 
