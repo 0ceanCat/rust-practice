@@ -6,7 +6,9 @@ use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
 const ARRAY_MAX_SIZE: usize = 4096;
 const BITMAP_SIZE: usize = 1024;
 const U64_BITS: usize = 64;
+const U64_BYTES: usize = 8;
 const U16_BITS: usize = 16;
+const U16_BYTES: usize = 2;
 const LOW_16_BITS: u32 = 0xffff;
 
 #[derive(Clone, PartialOrd, PartialEq)]
@@ -839,6 +841,28 @@ impl RoaringBitmap {
         other.containers.keys()
             .filter(|k| self.containers.contains_key(k))
             .any(|k| other.containers[k].intersects(&self.containers[k]))
+    }
+
+    pub fn describe(&self) {
+        let mut array_containers = 0;
+        let mut bitmap_containers = 0;
+        let mut space_occupied = self.containers.keys().len() * U16_BYTES;
+
+        for container in self.containers.values() {
+            match container {
+                Array(array_container) => {
+                    array_containers += 1;
+                    space_occupied += array_container.cardinality() * U16_BYTES;
+                }
+                Bitmap(_) => {
+                    bitmap_containers += 1;
+                    space_occupied += BITMAP_SIZE * U64_BYTES;
+                }
+            }
+        }
+
+
+        println!("cardinality: {}\narray containers: {}\nbitmap containers: {}\nmin: {:?}\nmax: {:?}\nspace: {:?}", self.cardinality(), array_containers, bitmap_containers, self.minimum(), self.maximum(), space_occupied);
     }
 }
 
