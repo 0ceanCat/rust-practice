@@ -201,7 +201,14 @@ impl Container {
     }
 
     fn is_subset(&self, other: &Container) -> bool {
-        todo!()
+        match self {
+            Array(array_container) => {
+                array_container.is_subset(other)
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.is_subset(other)
+            }
+        }
     }
 
     fn select(&self, idx: usize) -> Option<u16> {
@@ -416,6 +423,22 @@ impl ArrayContainer {
     fn select(&self, idx: usize) -> Option<u16> {
         self.array.get(idx).copied()
     }
+
+    fn is_subset(&self, other: &Container) -> bool {
+        match other {
+            Array(array_container) => {
+                if self.cardinality() > other.cardinality() {
+                    return false;
+                }
+
+                let set: HashSet<u16> = array_container.array.iter().copied().collect();
+                self.array.iter().copied().all(|v| set.contains(&v))
+            }
+            Bitmap(bitmap_container) => {
+                self.array.iter().copied().all(|v| bitmap_container.contains(v))
+            }
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, PartialOrd)]
@@ -452,12 +475,12 @@ impl BitmapContainer {
 
     fn add(&mut self, value: u16) -> bool {
         let (bucket, idx_inside_bucket) = Self::find_position_in_bitmap(value);
-        let result = self.bitmap[bucket] & (1 << idx_inside_bucket) == 0;
+        let not_exist = !self.is_one_at_position(bucket, idx_inside_bucket);
         self.bitmap[bucket] |= 1 << idx_inside_bucket;
-        if result {
+        if not_exist {
             self.cardinality += 1;
         }
-        result
+        not_exist
     }
 
     fn remove(&mut self, value: u16) -> bool {
@@ -495,19 +518,12 @@ impl BitmapContainer {
     }
 
     fn maximum(&self) -> Option<u16> {
-        let mut back_bucket_idx = BITMAP_SIZE - 1;
-        let mut back_bit_idx = U64_BITS - 1;
-        while back_bucket_idx >= 0 {
-            let bucket = self.bitmap[back_bucket_idx];
-            while back_bit_idx >= 0 && bucket != 0 {
-                let bit = back_bit_idx;
-                back_bit_idx -= 1;
-                if (bucket & (1u64 << bit)) != 0 {
-                    return Some((back_bucket_idx * U64_BITS + bit) as u16);
-                }
+        for (bucket_idx, &bucket) in self.bitmap.iter().enumerate().rev() {
+            if bucket != 0 {
+                let bit = (U64_BITS - 1) - bucket.leading_zeros() as usize;
+                let idx = bucket_idx * U64_BITS + bit;
+                return Some(idx as u16);
             }
-            back_bucket_idx -= 1;
-            back_bit_idx = U64_BITS - 1;
         }
         None
     }
@@ -677,6 +693,27 @@ impl BitmapContainer {
             bit_idx = 0;
         }
         None
+    }
+
+    fn is_subset(&self, other: &Container) -> bool {
+        match other {
+            Array(_) => {
+                false
+            }
+            Bitmap(bitmap_container) => {
+                if self.cardinality() > other.cardinality() {
+                    return false;
+                }
+
+                for i in 0..BITMAP_SIZE {
+                    let bucket = self.bitmap[i];
+                    if bucket != bucket & bitmap_container.bitmap[i] {
+                        return false
+                    }
+                }
+                true
+            }
+        }
     }
 }
 
@@ -904,6 +941,18 @@ impl RoaringBitmap {
                 }
             }
         }
+    }
+
+    pub fn is_subset(&self, other: &RoaringBitmap) -> bool {
+        for key in self.containers.keys() {
+            if !other.containers.contains_key(&key) {
+                return false;
+            }
+            if !self.containers[key].is_subset(&other.containers[&key]) {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn describe(&self) {
