@@ -181,7 +181,14 @@ impl Container {
     }
 
     fn symmetric_difference(&self, other: &Container) -> Container {
-        todo!()
+        match self {
+            Array(array_container) => {
+                array_container.symmetric_difference(other)
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.symmetric_difference(other)
+            }
+        }
     }
 
     fn intersects(&self, other: &Container) -> bool	{
@@ -436,6 +443,25 @@ impl ArrayContainer {
             }
             Bitmap(bitmap_container) => {
                 self.array.iter().copied().all(|v| bitmap_container.contains(v))
+            }
+        }
+    }
+
+    fn symmetric_difference(&self, other: &Container) -> Container {
+        match other {
+            Array(array_container) => {
+                let set_a: HashSet<u16> = HashSet::from_iter(array_container.iter());
+                let set_b: HashSet<u16> = HashSet::from_iter(self.iter());
+                let mut sym_diff = Vec::from_iter(set_a.symmetric_difference(&set_b).into_iter().copied());
+                sym_diff.sort_unstable();
+
+                let container = ArrayContainer {
+                    array: sym_diff
+                };
+                container.to_best_container()
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.symmetric_difference_with_array_container(self)
             }
         }
     }
@@ -715,6 +741,46 @@ impl BitmapContainer {
             }
         }
     }
+
+    fn symmetric_difference(&self, other: &Container) -> Container {
+        match other {
+            Array(array_container) => {
+                self.symmetric_difference_with_array_container(array_container)
+            }
+            Bitmap(bitmap_container) => {
+                let mut bitmap = vec![0u64; BITMAP_SIZE];
+                let mut cardinality = 0;
+                for i in 0..BITMAP_SIZE {
+                    bitmap[i] = self.bitmap[i] ^ bitmap_container.bitmap[i];
+                    cardinality += bitmap[i].count_ones();
+                }
+
+                BitmapContainer {
+                    bitmap,
+                    cardinality: cardinality as usize
+                }.to_best_container()
+            }
+        }
+    }
+
+    fn symmetric_difference_with_array_container(&self, other: &ArrayContainer) -> Container {
+        let set_a: HashSet<u16> = HashSet::from_iter(other.iter());
+        let mut sym_diff: Vec<u16> = self.iter()
+                                         .filter(|v| !set_a.contains(v))
+                                         .collect();
+
+        set_a.into_iter()
+             .filter(|v| self.contains(*v))
+             .for_each(|v| sym_diff.push(v));
+
+        sym_diff.sort_unstable();
+
+        let container = ArrayContainer {
+            array: sym_diff
+        };
+
+        container.to_best_container()
+    }
 }
 
 pub struct BitmapIterator<'a> {
@@ -953,6 +1019,26 @@ impl RoaringBitmap {
             }
         }
         true
+    }
+
+    pub fn symmetric_difference(&self, other: &RoaringBitmap) -> RoaringBitmap {
+        let mut difference_bitmap = RoaringBitmap::new();
+        for key in self.containers.keys() {
+            if !other.containers.contains_key(&key) {
+                difference_bitmap.containers.insert(*key, other.containers[&key].clone());
+            } else {
+                let diff = self.containers[key].symmetric_difference(&other.containers[&key]);
+                difference_bitmap.containers.insert(*key, diff);
+            }
+        }
+
+        for key in other.containers.keys() {
+            if !self.containers.contains_key(&key) {
+                difference_bitmap.containers.insert(*key, other.containers[&key].clone());
+            }
+        }
+
+        difference_bitmap
     }
 
     pub fn describe(&self) {
