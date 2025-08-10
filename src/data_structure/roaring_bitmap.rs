@@ -229,8 +229,15 @@ impl Container {
         }
     }
 
-    fn rank(value: u32) -> u32 {
-        todo!()
+    fn rank(&self, value: u16) -> usize {
+        match self {
+            Array(array_container) => {
+                array_container.rank(value)
+            }
+            Bitmap(bitmap_container) => {
+                bitmap_container.rank(value)
+            }
+        }
     }
 }
 
@@ -464,6 +471,10 @@ impl ArrayContainer {
                 bitmap_container.symmetric_difference_with_array_container(self)
             }
         }
+    }
+
+    fn rank(&self, value: u16) -> usize {
+        self.array.binary_search(&value).unwrap_or_else(|i| i)
     }
 }
 
@@ -781,6 +792,26 @@ impl BitmapContainer {
 
         container.to_best_container()
     }
+
+    fn rank(&self, value: u16) -> usize {
+        let mut smaller = 0;
+        let value = value as usize;
+
+        for (i, bucket) in self.bitmap.iter().enumerate() {
+            let ones = bucket.count_ones();
+            if (i + 1) * U64_BITS < value {
+                smaller += ones;
+            } else{
+                for j in 0..(value - i * U64_BITS) {
+                    if (bucket & (1 << j)) != 0  {
+                        smaller += 1;
+                    }
+                }
+                break
+            }
+        }
+        smaller as usize
+    }
 }
 
 pub struct BitmapIterator<'a> {
@@ -996,17 +1027,22 @@ impl RoaringBitmap {
     }
 
     pub fn select(&self, idx: usize) -> Option<u32> {
-        match self.containers.first_key_value() {
-            None => None,
-            Some((key, container)) => {
+        let mut idx = idx;
+        for (key, container) in &self.containers {
+            if idx < container.cardinality() {
                 match container.select(idx) {
-                    None => None,
+                    None => {
+                        return None;
+                    }
                     Some(v) => {
-                        Some(compute_u32!(*key, v))
+                        return Some(compute_u32!(*key, v));
                     }
                 }
+            } else {
+                idx -= container.cardinality();
             }
         }
+        None
     }
 
     pub fn is_subset(&self, other: &RoaringBitmap) -> bool {
@@ -1039,6 +1075,21 @@ impl RoaringBitmap {
         }
 
         difference_bitmap
+    }
+
+    pub fn rank(&self, value: u32) -> usize {
+        let (target_key, value) = Self::split_into_key_value(value);
+        let mut smaller = 0;
+
+        for (key, container) in &self.containers {
+            if *key < target_key {
+                smaller += container.cardinality();
+            } else {
+                smaller += container.rank(value);
+                break
+            }
+        }
+        smaller
     }
 
     pub fn describe(&self) {
