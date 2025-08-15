@@ -2,6 +2,7 @@ use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::{BitAnd, BitOr, Range, Sub};
 use crate::data_structure::roaring_bitmap::Container::{Array, Bitmap};
+use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_and_si256, _mm256_storeu_si256, _mm256_or_si256, _mm256_xor_si256, _mm256_andnot_si256};
 
 const ARRAY_MAX_SIZE: usize = 4096;
 const BITMAP_SIZE: usize = 1024;
@@ -11,14 +12,132 @@ const U16_BITS: usize = 16;
 const U16_BYTES: usize = 2;
 const LOW_16_BITS: u32 = 0xffff;
 
-macro_rules! compute_u32 {
-    ($key:expr, $value:expr) => {
-        {
-            let a: u16 = $key;
-            let b: u16 = $value;
-            ((a as u32) << 16)  + (b as u32)
+#[derive(Debug, Clone, Copy)]
+enum SIMDOperation {
+    AND, OR, XOR, AndNot
+}
+
+impl SIMDOperation {
+    fn operate_fn(&self) -> fn(u64, u64) -> u64 {
+        match self {
+            SIMDOperation::AND => |a, b| a & b,
+            SIMDOperation::OR  => |a, b| a | b,
+            SIMDOperation::XOR => |a, b| a ^ b,
+            SIMDOperation::AndNot => |a, b| a & !b,
         }
-    };
+    }
+}
+
+fn compute_u32(a: u16, b: u16) -> u32 {
+    ((a as u32) << 16)  + (b as u32)
+}
+
+fn simd_op_u64(a: &[u64; BITMAP_SIZE], b: &[u64; BITMAP_SIZE], op: SIMDOperation) -> [u64; BITMAP_SIZE] {
+    assert_eq!(a.len(), b.len());
+    #[cfg(all(target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                return match op {
+                    SIMDOperation::AND => simd_and_avx2_u64(a, b),
+                    SIMDOperation::OR => simd_or_avx2_u64(a, b),
+                    SIMDOperation::XOR => simd_xor_avx2_u64(a, b),
+                    SIMDOperation::AndNot => simd_and_not_avx2_u64(a, b)
+                }
+            }
+        }
+    }
+
+    let mut result = [0u64; BITMAP_SIZE];
+    let op_fn = op.operate_fn();
+    for i in 0..BITMAP_SIZE {
+        result[i] = op_fn(a[i], b[i]);
+    }
+    result
+}
+
+#[inline(always)]
+unsafe fn simd_and_avx2_u64(a: &[u64; BITMAP_SIZE], b: &[u64; BITMAP_SIZE]) -> [u64; BITMAP_SIZE] {
+    let lanes = 4;
+    let n = a.len();
+    let chunks = n / lanes;
+
+    let pa = a.as_ptr() as *const __m256i;
+    let pb = b.as_ptr() as *const __m256i;
+    let mut result = [064; BITMAP_SIZE];
+    let pr = result.as_mut_ptr() as *mut __m256i;
+
+    for i in 0..chunks {
+        let va = _mm256_loadu_si256(pa.add(i));
+        let vb = _mm256_loadu_si256(pb.add(i));
+        let vc = _mm256_and_si256(va, vb);
+        _mm256_storeu_si256(pr.add(i), vc);
+    }
+
+    result
+}
+
+#[inline(always)]
+unsafe fn simd_or_avx2_u64(a: &[u64; BITMAP_SIZE], b: &[u64; BITMAP_SIZE]) -> [u64; BITMAP_SIZE] {
+    let lanes = 4;
+    let n = a.len();
+    let chunks = n / lanes;
+
+    let pa = a.as_ptr() as *const __m256i;
+    let pb = b.as_ptr() as *const __m256i;
+    let mut result = [064; BITMAP_SIZE];
+    let pr = result.as_mut_ptr() as *mut __m256i;
+
+    for i in 0..chunks {
+        let va = _mm256_loadu_si256(pa.add(i));
+        let vb = _mm256_loadu_si256(pb.add(i));
+        let vc = _mm256_or_si256(va, vb);
+        _mm256_storeu_si256(pr.add(i), vc);
+    }
+
+    result
+}
+
+#[inline(always)]
+unsafe fn simd_xor_avx2_u64(a: &[u64; BITMAP_SIZE], b: &[u64; BITMAP_SIZE]) -> [u64; BITMAP_SIZE] {
+    let lanes = 4;
+    let n = a.len();
+    let chunks = n / lanes;
+
+    let pa = a.as_ptr() as *const __m256i;
+    let pb = b.as_ptr() as *const __m256i;
+    let mut result = [064; BITMAP_SIZE];
+    let pr = result.as_mut_ptr() as *mut __m256i;
+
+    for i in 0..chunks {
+        let va = _mm256_loadu_si256(pa.add(i));
+        let vb = _mm256_loadu_si256(pb.add(i));
+        let vc = _mm256_xor_si256(va, vb);
+        _mm256_storeu_si256(pr.add(i), vc);
+    }
+
+    result
+}
+
+#[inline(always)]
+unsafe fn simd_and_not_avx2_u64(a: &[u64; BITMAP_SIZE], b: &[u64; BITMAP_SIZE]) -> [u64; BITMAP_SIZE] {
+    let lanes = 4;
+    let n = a.len();
+    let chunks = n / lanes;
+
+    let pa = a.as_ptr() as *const __m256i;
+    let pb = b.as_ptr() as *const __m256i;
+    let mut result = [064; BITMAP_SIZE];
+    let pr = result.as_mut_ptr() as *mut __m256i;
+
+    for i in 0..chunks {
+        let va = _mm256_loadu_si256(pa.add(i));
+        let vb = _mm256_loadu_si256(pb.add(i));
+        let vc = _mm256_andnot_si256(vb, va);
+        _mm256_storeu_si256(pr.add(i), vc);
+    }
+
+    result
 }
 
 #[derive(Clone, PartialOrd, PartialEq)]
@@ -480,14 +599,14 @@ impl ArrayContainer {
 
 #[derive(Clone, PartialEq, PartialOrd)]
 pub struct BitmapContainer {
-    bitmap: Vec<u64>,
+    bitmap: [u64;BITMAP_SIZE],
     cardinality: usize
 }
 
 impl BitmapContainer {
     pub fn new() -> BitmapContainer {
         BitmapContainer {
-            bitmap: vec![0; BITMAP_SIZE],
+            bitmap: [0; BITMAP_SIZE],
             cardinality: 0
         }
     }
@@ -571,14 +690,8 @@ impl BitmapContainer {
                 self.union_with_array_container(other_array_container)
             }
             Bitmap(other_bitmap_container) => {
-                let mut union_bitmap = vec![0; BITMAP_SIZE];
-                let mut cardinality = 0;
-
-                for i in 0..BITMAP_SIZE {
-                    union_bitmap[i] = self.bitmap[i] | other_bitmap_container.bitmap[i];
-                    cardinality += union_bitmap[i].count_ones();
-                }
-
+                let union_bitmap = simd_op_u64(&self.bitmap, &other_bitmap_container.bitmap, SIMDOperation::OR);
+                let cardinality: u32 = union_bitmap.iter().map(|bucket| bucket.count_ones()).sum();
                 Bitmap(BitmapContainer {
                     bitmap: union_bitmap,
                     cardinality: cardinality as usize
@@ -603,18 +716,13 @@ impl BitmapContainer {
             Array(array_container) => {
                 self.intersect_with_array_container(array_container)
             }
-            Bitmap(bitmap_container) => {
-                let mut bitmap = Vec::with_capacity(BITMAP_SIZE);
-                let mut cardinality = 0;
+            Bitmap(other_bitmap_container) => {
+                let bitmap = simd_op_u64(&self.bitmap, &other_bitmap_container.bitmap, SIMDOperation::AND);
+                let cardinality: u32 = bitmap.iter().map(|bucket| bucket.count_ones()).sum();
 
-                for (a, b) in self.bitmap.iter().zip(&bitmap_container.bitmap) {
-                    let word = a & b;
-                    cardinality += word.count_ones() as usize;
-                    bitmap.push(word);
-                }
                 let bitmap_container = BitmapContainer {
                     bitmap,
-                    cardinality
+                    cardinality: cardinality as usize
                 };
                 if bitmap_container.should_downgrade() {
                     Array(bitmap_container.downgrade())
@@ -649,14 +757,9 @@ impl BitmapContainer {
                 let difference: Vec<u16> = self.iter().filter(|v| !array_container.contains(*v)).collect();
                 ArrayContainer { array: difference }.to_best_container()
             }
-            Bitmap(bitmap_container) => {
-                let mut cardinality = 0;
-                let mut difference_bitmap = Vec::with_capacity(BITMAP_SIZE);
-                for i in 0..BITMAP_SIZE {
-                    let word = self.bitmap[i] & (!bitmap_container.bitmap[i]);
-                    difference_bitmap.push(word);
-                    cardinality += word.count_ones();
-                }
+            Bitmap(other_bitmap_container) => {
+                let difference_bitmap = simd_op_u64(&self.bitmap, &other_bitmap_container.bitmap, SIMDOperation::AndNot);
+                let cardinality: u32 = difference_bitmap.iter().map(|bucket| bucket.count_ones()).sum();
                 let bitmap_container = BitmapContainer {
                     bitmap: difference_bitmap,
                     cardinality: cardinality as usize
@@ -758,16 +861,11 @@ impl BitmapContainer {
             Array(array_container) => {
                 self.symmetric_difference_with_array_container(array_container)
             }
-            Bitmap(bitmap_container) => {
-                let mut bitmap = vec![0u64; BITMAP_SIZE];
-                let mut cardinality = 0;
-                for i in 0..BITMAP_SIZE {
-                    bitmap[i] = self.bitmap[i] ^ bitmap_container.bitmap[i];
-                    cardinality += bitmap[i].count_ones();
-                }
-
+            Bitmap(other_bitmap_container) => {
+                let union_bitmap = simd_op_u64(&self.bitmap, &other_bitmap_container.bitmap, SIMDOperation::XOR);
+                let cardinality: u32 = union_bitmap.iter().map(|bucket| bucket.count_ones()).sum();
                 BitmapContainer {
-                    bitmap,
+                    bitmap: union_bitmap,
                     cardinality: cardinality as usize
                 }.to_best_container()
             }
@@ -815,13 +913,13 @@ impl BitmapContainer {
 }
 
 pub struct BitmapIterator<'a> {
-    bitmap: &'a Vec<u64>,
+    bitmap: &'a [u64;BITMAP_SIZE],
     bucket_idx: usize,
     bit_idx: usize,
 }
 
 impl<'a> BitmapIterator<'a> {
-    pub fn new(bitmap: &'a Vec<u64>) -> BitmapIterator {
+    pub fn new(bitmap: &'a [u64;BITMAP_SIZE]) -> BitmapIterator {
         BitmapIterator {
             bitmap,
             bucket_idx: 0,
@@ -850,6 +948,7 @@ impl<'a> Iterator for BitmapIterator<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct RoaringBitmap {
     containers: BTreeMap<u16, Container>,
     cardinality: usize
@@ -935,7 +1034,7 @@ impl RoaringBitmap {
                        .map_or(None, |(key, container)|
                                         {
                                             container.minimum()
-                                                     .map_or(None, |minimum| Some(compute_u32!(*key, minimum)))
+                                                     .map_or(None, |minimum| Some(compute_u32(*key, minimum)))
                                         })
     }
 
@@ -944,7 +1043,7 @@ impl RoaringBitmap {
             .map_or(None, |(key, container)|
                 {
                     container.maximum()
-                             .map_or(None, |maximum| Some(compute_u32!(*key, maximum)))
+                             .map_or(None, |maximum| Some(compute_u32(*key, maximum)))
                 })
     }
 
@@ -1014,7 +1113,7 @@ impl RoaringBitmap {
         for (key, container) in &self.containers {
             container.iter()
                 .for_each(|v| {
-                    array.push(compute_u32!(*key, v));
+                    array.push(compute_u32(*key, v));
                 });
         }
         array
@@ -1035,7 +1134,7 @@ impl RoaringBitmap {
                         return None;
                     }
                     Some(v) => {
-                        return Some(compute_u32!(*key, v));
+                        return Some(compute_u32(*key, v));
                     }
                 }
             } else {
@@ -1140,7 +1239,7 @@ impl<'a> Iterator for RoaringBitmapIter<'a> {
         loop {
             if let Some((high_16, ref mut inner)) = self.current_inner {
                 if let Some(low_16) = inner.next() {
-                    return Some(compute_u32!(high_16, low_16));
+                    return Some(compute_u32(high_16, low_16));
                 }
             }
 
