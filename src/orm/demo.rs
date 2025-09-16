@@ -20,13 +20,13 @@ impl Person {
 }
 
 fn main(){
-    let mut p = crate::Person::new(1, String::from("haha"));
+    let mut p = Person::new(1, String::from("haha"));
     p.persist();
-    println!("persist: {:?}", crate::Person::find("name=:name", &[(":name", "haha")]));
+    println!("persist: {:?}", Person::find("name=:name", &[(":name", "haha")]));
     p.name = String::from("new_name");
     p.update();
-    println!("update: {:?}", crate::Person::find("name=:name", &[(":name", "haha")]));
-    println!("update: {:?}", crate::Person::find("name=:name", &[(":name", "new_name")]));
+    println!("update: {:?}", Person::find("name=:name", &[(":name", "haha")]));
+    println!("update: {:?}", Person::find("name=:name", &[(":name", "new_name")]));
     p.delete();
-    println!("delete: {:?}", crate::Person::find("name=:name", &[(":name", "new_name")]));
+    println!("delete: {:?}", Person::find("name=:name", &[(":name", "new_name")]));
 }

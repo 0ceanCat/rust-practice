@@ -9,7 +9,10 @@ edition = "2021"
 [dependencies]
 regex = "1.10.3"
 anyhow = "1.0.80"
-rand = "0.8.5"
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+syn ={ version = "2.0.52", features = ["full"] }
+orm_macro_derive = {path = "src/orm_macro_derive" }
+
 [profile.release]
 panic = 'abort'
 
