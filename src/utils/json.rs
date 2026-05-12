@@ -22,42 +22,42 @@ impl DataType {
     pub(crate) fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
             DataType::String(data) => { Ok(data) }
-            _ => Err("this is not a string")
+            _ => Err("This value is not a string")
         }
     }
 
     pub(crate) fn unwrap_as_float(&self) -> Result<f64, &str> {
         match self {
             Float(data) => { Ok(*data) }
-            _ => Err("this is not a Float")
+            _ => Err("This value is not a Float")
         }
     }
 
     pub(crate) fn unwrap_as_int(&self) -> Result<i32, &str> {
         match self {
             Int(data) => { Ok(*data) }
-            _ => Err("this is not an Int")
+            _ => Err("This value is not an Int")
         }
     }
 
     pub(crate) fn unwrap_as_array(&self) -> Result<&Vec<DataType>, &str> {
         match self {
             Array(data) => { Ok(data) }
-            _ => Err("this is not an Array")
+            _ => Err("This value is not an Array")
         }
     }
 
     pub(crate) fn unwrap_as_boolean(&self) -> Result<bool, &str> {
         match self {
             Boolean(data) => { Ok(*data) }
-            _ => Err("this is not a Boolean")
+            _ => Err("This value is not a Boolean")
         }
     }
 
     pub(crate) fn unwrap_as_object(&self) -> Result<&HashMap<String, DataType>, &str> {
         match self {
             Object(data) => { Ok(data) }
-            _ => Err("this is not an Object")
+            _ => Err("This value is not an Object")
         }
     }
 
@@ -80,11 +80,11 @@ impl JsonParser {
         }
     }
 
-    pub fn parse_to_map(mut self) -> HashMap<String, DataType> {
+    pub fn parse_to_map(mut self) -> Result<HashMap<String, DataType>,  String> {
         let Object(map) = self.parse_object() else {
-            panic!("parse json failed")
+            return Err("parse json failed".parse().unwrap());
         };
-        map
+        Ok(map)
     }
 
     fn parse(&mut self) -> DataType {
@@ -272,7 +272,7 @@ impl JsonSerializable for i32
 }
 
 impl<T> JsonSerializable for Vec<T>
-    where T: JsonSerializable
+where T: JsonSerializable
 {
     fn serialize(&self, serializer: Serializer) -> String {
         let mut seq = serializer.serialize_seq();
@@ -284,7 +284,7 @@ impl<T> JsonSerializable for Vec<T>
 }
 
 impl<T> JsonSerializable for HashMap<String, T>
-    where T: JsonSerializable
+where T: JsonSerializable
 {
     fn serialize(&self, serializer: Serializer) -> String {
         let mut seq = serializer.serialize_struct();
@@ -296,14 +296,14 @@ impl<T> JsonSerializable for HashMap<String, T>
 }
 
 struct JsonEntry<'a, T>
-    where T: JsonSerializable
+where T: JsonSerializable
 {
     key: String,
     value: &'a T
 }
 
 impl<'a, T> JsonEntry<'a, T>
-    where T: JsonSerializable
+where T: JsonSerializable
 {
     fn new(key: String, value: &'a T) -> JsonEntry<'a, T>
     {
@@ -362,7 +362,7 @@ impl SerializerStruct
     }
 
     pub fn serialize_field<T>(&mut self, name: &str, value: &T)
-        where T: JsonSerializable
+    where T: JsonSerializable
     {
         self.fields.push_str("\"");
         self.fields.push_str(name);
@@ -394,7 +394,7 @@ impl SerializerSeq
     }
 
     fn serialize_element<T>(&mut self, elem: &T)
-        where T: JsonSerializable
+    where T: JsonSerializable
     {
         self.seq.push_str(elem.serialize(Serializer{}).as_str());
         self.seq.push(',');

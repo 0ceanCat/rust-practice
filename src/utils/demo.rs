@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::utils::json::{JsonSerializable, Serializer};
+use crate::utils::json2::{JsonParser, JsonSerializable, Serializer};
 
 struct Test {
     name: String,
@@ -31,7 +31,7 @@ impl JsonSerializable for User {
     }
 }
 
-fn main() {
+pub(crate) fn main() -> Result<(), String> {
     let serializer = Serializer::new();
     let mut map = HashMap::new();
     map.insert(String::from("123123"), vec!(String::from("111"), String::from("222")));
@@ -47,5 +47,10 @@ fn main() {
     };
 
     let string = u.serialize(serializer);
-    println!("{}", string)
+    println!("{}", string);
+
+    let mut json_parser = JsonParser::new(&string);
+    let map = json_parser.parse_to_map()?;
+    println!("{:?}", map);
+    Ok(())
 }

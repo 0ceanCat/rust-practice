@@ -132,7 +132,9 @@ impl HttpRequest {
 
         let body = std::str::from_utf8(&body).unwrap();
 
-        let body = JsonParser::new(body).parse_to_map();
+        let Ok(body) = JsonParser::new(body).parse_to_map() else {
+            return None;
+        };
         Some(body)
     }
 
@@ -188,7 +190,7 @@ pub(crate) struct HttpResponse {
 impl<'a> HttpResponse {
     const BREAK_LINE: &'a str = "\r\n";
 
-    pub(crate) fn set_header(&mut self, key: String, value:String) {
+    pub(crate) fn set_header(&mut self, key: String, value: String) {
         self.headers.insert(key, value);
     }
 
@@ -217,7 +219,7 @@ impl<'a> HttpResponse {
         HttpResponse {
             status,
             headers,
-            data
+            data,
         }
     }
 
@@ -261,7 +263,6 @@ impl<'a> Drop for HttpConnection {
 }
 
 impl<'a> HttpConnection {
-
     pub(crate) fn new(connection: (TcpStream, SocketAddr)) -> Self {
         HttpConnection {
             request: HttpRequest::new(&connection.0).unwrap(),
