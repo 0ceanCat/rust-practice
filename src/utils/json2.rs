@@ -1,28 +1,16 @@
-use std::collections::HashMap;
 use crate::utils::json2::DataType::{Array, Boolean, Float, Int, Null, Object};
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::ops::Range;
+
+fn is_whitespace(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r')
+}
 
 pub(crate) struct JsonParser<'a> {
     input: &'a str,
-    scanned: bool,
-    index: HashMap<&'a str, LazyJsonValue<'a>>,
-}
-
-
-struct JsonInput<'a> {
-    data: &'a [u8],
-    len: usize,
     position: usize,
-}
-
-
-impl<'a> JsonInput<'a> {
-    pub fn new(input: &'a str) -> Self {
-        Self {
-            data: input.as_bytes(),
-            len: input.len(),
-            position: 0,
-        }
-    }
+    index: OnceCell<HashMap<&'a str, Range<usize>>>,
 }
 
 struct JsonScanner<'a> {
@@ -38,6 +26,179 @@ impl<'a> JsonScanner<'a> {
             len: input.len(),
             position: 0,
         }
+    }
+
+    pub fn build_index(&mut self) -> Result<HashMap<&'a str, Range<usize>>, &'static str> {
+        let mut index = HashMap::new();
+
+        loop {
+            self.skip_white_spaces();
+            let key = self.read_key()?;
+            self.skip_white_spaces();
+
+            self.expect_byte(b':')?;
+
+            let value_range = self.skip_value()?;
+
+            index.insert(key, value_range);
+
+            match self.current_byte() {
+                Some(b',') => self.advance(),
+                Some(b'}') => {
+                    break;
+                }
+                Some(byte) if is_whitespace(byte) => {
+                    self.skip_white_spaces();
+                }
+                _ => return Err("Invalid JSON format."),
+            }
+        }
+
+        Ok(index)
+    }
+
+    fn skip_value(&mut self) -> Result<Range<usize>, &'static str> {
+        match self.current() {
+            b'"' => self.skip_string()?,
+            b'{' => self.skip_object()?,
+            b'[' => self.skip_array()?,
+            b't' => self.expect_literal("true")?,
+            b'f' => self.expect_literal("false")?,
+            b'n' => self.expect_literal("null")?,
+            b'-' | b'0'..=b'9' => self.skip_number()?,
+            _ => Err("invalid json value"),
+        }
+    }
+    fn skip_string(&mut self) -> Result<Range<usize>, &'static str> {
+        self.advance(); // skip '"'
+        let start = self.position;
+
+        while !self.is_end() && self.current_byte() != Some(b'"') {
+            self.advance();
+        }
+
+        self.expect_byte(b'"')?;
+
+        let end = self.position;
+        self.advance();
+        Ok(start..end)
+    }
+
+    fn skip_object(&mut self) -> Result<Range<usize>, &'static str> {
+        let start = self.position;
+
+        self.advance();
+        loop {
+            self.skip_white_spaces();
+
+            match self.current_byte() {
+                Some(b'}') => {
+                    self.advance();
+                    return Ok(start..self.position);
+                }
+
+                Some(b'"') => {
+                    self.skip_string()?; // key
+
+                    self.skip_white_spaces();
+
+                    self.expect_byte(b':')?;
+
+                    self.advance();
+
+                    self.skip_white_spaces();
+
+                    self.skip_value()?;
+
+                    self.skip_white_spaces();
+
+                    match self.current() {
+                        b',' => {
+                            self.advance();
+                        }
+                        b'}' => {
+                            self.advance();
+                            return Ok(start..self.position);
+                        }
+                        _ => return Err("Expected ',' or '}' in object"),
+                    }
+                }
+
+                _ => return Err("Expected object key or '}'"),
+            }
+        }
+    }
+
+    fn skip_number(&mut self) -> Result<Range<usize>, &'static str> {
+        let start = self.position;
+        let mut dot = false;
+        self.advance();
+        loop {
+            match self.current_byte() {
+                Some(b'0'..=b'9') => {
+                    self.advance();
+                }
+                Some(b'.') if !dot => {
+                    self.advance();
+                    dot = true;
+                }
+                Some(b',') => {
+                    let end = self.position;
+                    self.advance();
+                    return Ok(start..end);
+                }
+                Some(byte) if is_whitespace(byte) => {
+                    self.advance();
+                }
+                _ => return Err("Expected number"),
+            }
+        }
+    }
+
+    fn read_key(&mut self) -> Result<&'a str, &'static str> {
+        match self.current_byte() {
+            Some(b'"') => self.read_string(),
+            _ => Err("Invalid json value"),
+        }
+    }
+
+    fn read_string(&mut self) -> Result<&'a str, &'static str> {
+        let range = self.skip_string()?;
+        Ok(std::str::from_utf8(&self.data[range.start..range.end]).unwrap())
+    }
+
+    fn current_byte(&self) -> Option<u8> {
+        self.data.get(self.position).copied()
+    }
+
+    fn is_end(&self) -> bool {
+        self.position >= self.len
+    }
+
+    fn advance(&mut self) {
+        self.position += 1;
+    }
+
+    fn skip_white_spaces(&mut self) {
+        while !self.is_end() && is_whitespace(self.current_byte().unwrap()) {
+            self.position += 1
+        }
+    }
+
+    fn expect_byte(&self, b: u8) -> Result<(), &'static str> {
+        if !self.is_end() && self.current_byte() == Some(b) {
+            return Ok(());
+        }
+        Err("Expected byte didnt found.")
+    }
+
+    fn expect_literal(&self, str: &str) -> Result<(), &'static str> {
+        let start = self.position;
+        let end = start + str.len();
+        if std::str::from_utf8(&self.data[start..end])? == str {
+            return Ok(());
+        }
+        Err("Expected literal didnt found.")
     }
 }
 
@@ -55,50 +216,50 @@ pub enum DataType<'a> {
 impl<'a> DataType<'a> {
     pub(crate) fn unwrap_as_string(&self) -> Result<&str, &str> {
         match self {
-            DataType::String(data) => { Ok(data) }
-            _ => Err("this is not a string")
+            DataType::String(data) => Ok(data),
+            _ => Err("this is not a string"),
         }
     }
 
     pub(crate) fn unwrap_as_float(&self) -> Result<f64, &str> {
         match self {
-            Float(data) => { Ok(*data) }
-            _ => Err("this is not a Float")
+            Float(data) => Ok(*data),
+            _ => Err("this is not a Float"),
         }
     }
 
     pub(crate) fn unwrap_as_int(&self) -> Result<i32, &str> {
         match self {
-            Int(data) => { Ok(*data) }
-            _ => Err("this is not an Int")
+            Int(data) => Ok(*data),
+            _ => Err("this is not an Int"),
         }
     }
 
     pub(crate) fn unwrap_as_array(&self) -> Result<&Vec<DataType<'a>>, &str> {
         match self {
-            Array(data) => { Ok(data) }
-            _ => Err("this is not an Array")
+            Array(data) => Ok(data),
+            _ => Err("this is not an Array"),
         }
     }
 
     pub(crate) fn unwrap_as_boolean(&self) -> Result<bool, &str> {
         match self {
-            Boolean(data) => { Ok(*data) }
-            _ => Err("this is not a Boolean")
+            Boolean(data) => Ok(*data),
+            _ => Err("this is not a Boolean"),
         }
     }
 
     pub(crate) fn unwrap_as_object(&self) -> Result<&HashMap<&'a str, DataType<'a>>, &str> {
         match self {
-            Object(data) => { Ok(data) }
-            _ => Err("this is not an Object")
+            Object(data) => Ok(data),
+            _ => Err("this is not an Object"),
         }
     }
 
     pub(crate) fn is_null(&self) -> bool {
         match self {
             Null => true,
-            _ => false
+            _ => false,
         }
     }
 }
@@ -106,29 +267,35 @@ impl<'a> DataType<'a> {
 impl<'a> JsonParser<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
-            input: JsonInput::new(input),
-            scanned: false,
-            index: HashMap::new(),
+            input,
+            position: 0,
+            index: OnceCell::new(),
         }
     }
 
-    fn get(&mut self, key: &str) -> Result<DataType<'a>, &'static str> {
-        if !self.scanned {
-            self.scanned = true;
-            self.parse()?;
+    fn get(&mut self, key: &str) -> Result<Option<DataType<'a>>, &'static str> {
+        match self.index.get_or_init(|| self.init_index()?).get(key) {
+            None => Ok(None),
+            Some(range) => self.parse(range)?,
         }
     }
 
-    fn parse(&mut self) -> Result<DataType<'a>, &'static str> {
+    fn init_index(&mut self) -> Result<HashMap<&'a str, Range<usize>>, &'static str> {
+        let mut scanner = JsonScanner::new(&self.input);
+        scanner.build_index()
+    }
+
+    fn parse(&mut self, range: Range<usize>) -> Result<Option<DataType<'a>>, &'static str> {
+        self.position = range.start;
         self.skip_white_spaces();
-        let result = match self.current_token() {
-            b'{' => self.parse_object(),
-            b'"' => Ok(DataType::String(self.parse_string()?)),
-            b'[' => self.parse_array(),
-            b'+' | b'-' | b'0'..=b'9' => self.parse_number(),
-            b't' | b'f' => self.parse_boolean(),
-            b'n' => Ok(self.parse_null()),
-            _ => { return Err("Unknown token detected.") }
+        let result = match self.current_byte() {
+            Some(b'{') => self.parse_object(),
+            Some(b'"') => Ok(Some(DataType::String(self.parse_string()?))),
+            Some(b'[') => self.parse_array(),
+            Some(b'+') | Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
+            Some(b't') | Some(b'f') => self.parse_boolean(),
+            Some(b'n') => Ok(self.parse_null()),
+            _ => return Err("Unknown token detected."),
         };
         self.skip_white_spaces();
         result
@@ -189,10 +356,10 @@ impl<'a> JsonParser<'a> {
             match current {
                 b']' => break,
                 b',' => continue,
-                _ => { return Err("array parse failed") }
+                _ => return Err("array parse failed"),
             }
         }
-        Ok(Array(array))
+        Ok(Some(Array(array)))
     }
 
     fn parse_null(&mut self) -> DataType<'a> {
@@ -202,7 +369,8 @@ impl<'a> JsonParser<'a> {
 
     fn parse_boolean(&mut self) -> Result<DataType<'a>, &'static str> {
         self.skip_white_spaces();
-        if let Ok(boolean_str) = std::str::from_utf8(&self.data[self.position..(self.position + 4)]) {
+        if let Ok(boolean_str) = std::str::from_utf8(&self.data[self.position..(self.position + 4)])
+        {
             self.position += 4;
 
             let result: bool;
@@ -288,8 +456,8 @@ impl<'a> JsonParser<'a> {
         Ok(result)
     }
 
-    fn current_token(&self) -> u8 {
-        self.data[self.position]
+    fn current_byte(&self) -> Option<u8> {
+        self.input.get(self.position).copied()
     }
 
     fn consume_token(&mut self) {
@@ -297,7 +465,7 @@ impl<'a> JsonParser<'a> {
     }
 
     fn skip_white_spaces(&mut self) {
-        while !self.is_end() && JsonParser::is_whitespace(self.current_token()) {
+        while !self.is_end() && is_whitespace(self.current_token()) {
             self.position += 1
         }
     }
@@ -313,10 +481,6 @@ impl<'a> JsonParser<'a> {
     fn byte_to_float(byte: u8) -> f64 {
         (byte - b'0') as f64
     }
-
-    fn is_whitespace(b: u8) -> bool {
-        matches!(b, b' ' | b'\t' | b'\n' | b'\r')
-    }
 }
 
 pub(crate) trait JsonSerializable {
@@ -329,15 +493,13 @@ impl JsonSerializable for String {
     }
 }
 
-impl JsonSerializable for f64
-{
+impl JsonSerializable for f64 {
     fn serialize(&self, serializer: Serializer) -> String {
         serializer.serialize_f64(*self)
     }
 }
 
-impl JsonSerializable for i32
-{
+impl JsonSerializable for i32 {
     fn serialize(&self, serializer: Serializer) -> String {
         serializer.serialize_i32(*self)
     }
@@ -381,12 +543,8 @@ impl<'a, T> JsonEntry<'a, T>
 where
     T: JsonSerializable,
 {
-    fn new(key: String, value: &'a T) -> JsonEntry<'a, T>
-    {
-        JsonEntry {
-            key,
-            value,
-        }
+    fn new(key: String, value: &'a T) -> JsonEntry<'a, T> {
+        JsonEntry { key, value }
     }
 }
 
@@ -412,27 +570,23 @@ impl Serializer {
         f.to_string()
     }
 
-    pub fn serialize_struct(&self) -> SerializerStruct
-    {
+    pub fn serialize_struct(&self) -> SerializerStruct {
         SerializerStruct::new()
     }
 
-    pub fn serialize_seq(&self) -> SerializerSeq
-    {
+    pub fn serialize_seq(&self) -> SerializerSeq {
         SerializerSeq::new()
     }
 }
 
-pub(crate) struct SerializerStruct
-{
+pub(crate) struct SerializerStruct {
     fields: String,
 }
 
-impl SerializerStruct
-{
+impl SerializerStruct {
     fn new() -> SerializerStruct {
         SerializerStruct {
-            fields: String::from("{")
+            fields: String::from("{"),
         }
     }
 
@@ -443,7 +597,8 @@ impl SerializerStruct
         self.fields.push_str("\"");
         self.fields.push_str(name);
         self.fields.push_str("\": ");
-        self.fields.push_str(value.serialize(Serializer {}).as_str());
+        self.fields
+            .push_str(value.serialize(Serializer {}).as_str());
         self.fields.push(',');
     }
 
@@ -456,16 +611,14 @@ impl SerializerStruct
     }
 }
 
-pub(crate) struct SerializerSeq
-{
+pub(crate) struct SerializerSeq {
     seq: String,
 }
 
-impl SerializerSeq
-{
+impl SerializerSeq {
     fn new() -> SerializerSeq {
         SerializerSeq {
-            seq: String::from("[")
+            seq: String::from("["),
         }
     }
 
